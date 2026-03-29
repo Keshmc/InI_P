@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter
-import time
 from typing import Any
 
 import streamlit as st
@@ -42,10 +41,10 @@ class NewsSearchPage:
             self._render_analysis(payload)
 
     def _render_search_form(self) -> None:
-        left_col, center_col, right_col = st.columns([1.2, 3.6, 1.2])
-        del left_col, right_col
+        form_col, spacer_col = st.columns([2.4, 1.6])
+        del spacer_col
 
-        with center_col:
+        with form_col:
             st.title("News Search")
             st.write("Search news by keyword or topic and analyze sentiment and extracted entities.")
 
@@ -111,8 +110,7 @@ class NewsSearchPage:
             st.session_state.pop("news_search_message", None)
             st.session_state.pop("news_search_ok", None)
 
-            self._show_loading_screen()
-            response = self.presenter.run_news_search(request)
+            response = self._show_loading_screen(request)
             st.session_state[self._SEARCH_PAYLOAD_KEY] = response.payload
             st.session_state["news_search_message"] = response.message
             st.session_state["news_search_ok"] = response.ok
@@ -128,9 +126,14 @@ class NewsSearchPage:
         st.caption("Results are shown from the most recently loaded dataset.")
 
         articles_found = int(summary.get("articles_found", 0))
+        loaded_articles = len(records)
+        total_articles = max(articles_found, loaded_articles)
         period_label = str(request.get("period", "")).strip() or "selected interval"
-        status_ratio = min(articles_found / 100.0, 1.0)
-        st.progress(status_ratio, text=f"Status: {articles_found} articles found in the last {period_label}")
+        status_ratio = 0.0 if total_articles <= 0 else min(loaded_articles / total_articles, 1.0)
+        st.progress(
+            status_ratio,
+            text=f"Status: {loaded_articles}/{total_articles} articles loaded in the last {period_label}",
+        )
 
         status_message = st.session_state.get("news_search_message", "Search completed.")
         if st.session_state.get("news_search_ok", True):
@@ -151,9 +154,14 @@ class NewsSearchPage:
 
         st.markdown("#### Sentiment Score")
         avg_sentiment = float(summary.get("avg_sentiment_score", 0.0))
-        col_metric, col_meter = st.columns([1, 3])
+        avg_magnitude = float(summary.get("avg_sentiment_magnitude", 0.0))
+        col_metric, col_meter = st.columns([1.4, 3])
         with col_metric:
-            st.metric("Average", f"{avg_sentiment:+.3f}")
+            metric_a, metric_b = st.columns(2)
+            with metric_a:
+                st.metric("Average Score", f"{avg_sentiment:+.3f}")
+            with metric_b:
+                st.metric("Average Magnitude", f"{avg_magnitude:.3f}")
         with col_meter:
             render_sentiment_meter(avg_sentiment)
 
@@ -259,18 +267,6 @@ class NewsSearchPage:
                         counter[name] += 1
         return counter.most_common()
 
-    @staticmethod
-    def _show_loading_screen() -> None:
-        loading = st.empty()
-        loading.markdown("### Loading search and analysis...")
-        progress = st.progress(0, text="Initializing search")
-        for value, label in [
-            (20, "Loading sources"),
-            (45, "Processing articles"),
-            (70, "Computing sentiment"),
-            (90, "Extracting entities"),
-            (100, "Finalizing"),
-        ]:
-            time.sleep(0.12)
-            progress.progress(value, text=label)
-        loading.empty()
+    def _show_loading_screen(self, request: SearchRequest):
+        with st.spinner("Loading analysis..."):
+            return self.presenter.run_news_search(request)
