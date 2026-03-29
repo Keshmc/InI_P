@@ -42,68 +42,80 @@ class NewsSearchPage:
             self._render_analysis(payload)
 
     def _render_search_form(self) -> None:
-        st.title("News Search")
-        st.write("Search news by keyword or topic and analyze sentiment and extracted entities.")
+        left_col, center_col, right_col = st.columns([1.2, 3.6, 1.2])
+        del left_col, right_col
 
-        mode = st.radio("Search Mode", options=["Keyword", "Topic"], horizontal=True, key="search_mode")
+        with center_col:
+            st.title("News Search")
+            st.write("Search news by keyword or topic and analyze sentiment and extracted entities.")
 
-        keyword = ""
-        topic = ""
-        if mode == "Keyword":
-            keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
-        else:
-            topic = st.selectbox("Topic", options=TOPIC_OPTIONS, key="search_topic")
+            mode = st.radio("Search Mode", options=["Keyword", "Topic"], horizontal=True, key="search_mode")
 
-        period_default_index = PERIOD_OPTIONS.index("1d")
-        period = st.selectbox(
-            "Time Interval",
-            options=PERIOD_OPTIONS,
-            index=period_default_index,
-            key="search_period",
-        )
-        st.caption("All available matches in the selected time interval will be processed.")
+            keyword = ""
+            topic = ""
+            if mode == "Keyword":
+                keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
+            else:
+                topic = st.selectbox("Topic", options=TOPIC_OPTIONS, key="search_topic")
 
-        with st.expander("Advanced Settings", expanded=False):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                extract_full_text = st.checkbox("Extract full article text", value=True, key="search_extract_full_text")
-                include_entities = st.checkbox("Include entity extraction", value=True, key="search_include_entities")
-            with col_b:
-                st.info("No artificial UI cap. Provider limits are handled automatically.")
+            period_default_index = PERIOD_OPTIONS.index("1d")
+            period = st.selectbox(
+                "Time Interval",
+                options=PERIOD_OPTIONS,
+                index=period_default_index,
+                key="search_period",
+            )
+            st.caption("All available matches in the selected time interval will be processed.")
 
-        submitted = st.button("Search", type="primary", width="stretch", key="search_submit")
+            with st.expander("Advanced Settings", expanded=False):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    extract_full_text = st.checkbox(
+                        "Extract full article text",
+                        value=True,
+                        key="search_extract_full_text",
+                    )
+                    include_entities = st.checkbox(
+                        "Include entity extraction",
+                        value=True,
+                        key="search_include_entities",
+                    )
+                with col_b:
+                    st.info("No artificial UI cap. Provider limits are handled automatically.")
 
-        if not submitted:
-            return
+            submitted = st.button("Search", type="primary", width="stretch", key="search_submit")
 
-        request = SearchRequest(
-            mode=mode.lower(),
-            keyword=keyword.strip(),
-            topic=topic.strip().upper(),
-            period=period,
-            max_results=1000,
-            extract_full_text=extract_full_text,
-            include_entities=include_entities,
-            use_mock_nlp=False,
-            fallback_to_mock_on_error=False,
-            store_to_datastore=False,
-            industry_sector="",
-        )
+            if not submitted:
+                return
 
-        if request.mode == "keyword" and not request.keyword:
-            st.error("Please enter a keyword.")
-            return
+            request = SearchRequest(
+                mode=mode.lower(),
+                keyword=keyword.strip(),
+                topic=topic.strip().upper(),
+                period=period,
+                max_results=1000,
+                extract_full_text=extract_full_text,
+                include_entities=include_entities,
+                use_mock_nlp=False,
+                fallback_to_mock_on_error=False,
+                store_to_datastore=False,
+                industry_sector="",
+            )
 
-        # Remove previous results before loading the new search.
-        st.session_state.pop(self._SEARCH_PAYLOAD_KEY, None)
-        st.session_state.pop("news_search_message", None)
-        st.session_state.pop("news_search_ok", None)
+            if request.mode == "keyword" and not request.keyword:
+                st.error("Please enter a keyword.")
+                return
 
-        self._show_loading_screen()
-        response = self.presenter.run_news_search(request)
-        st.session_state[self._SEARCH_PAYLOAD_KEY] = response.payload
-        st.session_state["news_search_message"] = response.message
-        st.session_state["news_search_ok"] = response.ok
+            # Remove previous results before loading the new search.
+            st.session_state.pop(self._SEARCH_PAYLOAD_KEY, None)
+            st.session_state.pop("news_search_message", None)
+            st.session_state.pop("news_search_ok", None)
+
+            self._show_loading_screen()
+            response = self.presenter.run_news_search(request)
+            st.session_state[self._SEARCH_PAYLOAD_KEY] = response.payload
+            st.session_state["news_search_message"] = response.message
+            st.session_state["news_search_ok"] = response.ok
 
     def _render_analysis(self, payload: dict[str, Any]) -> None:
         records = payload.get("records", [])
