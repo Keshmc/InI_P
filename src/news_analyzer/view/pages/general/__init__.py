@@ -1,0 +1,1 @@
+"""General view components package."""

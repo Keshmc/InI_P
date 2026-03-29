@@ -9,6 +9,7 @@ from gnews import GNews
 
 
 LOGGER = logging.getLogger(__name__)
+GNEWS_MAX_RESULTS_CAP = 100
 
 VALID_PERIODS = {"1h", "6h", "12h", "1d", "3d", "7d"}
 VALID_TOPICS = {
@@ -66,7 +67,7 @@ class RssFeedLoader:
             return []
 
         gnews = self._build_client(period=period, max_results=max_results)
-        query_candidates = [clean_keyword, f"{clean_keyword} stock"]
+        query_candidates = [clean_keyword]
 
         articles: list[NewsArticle] = []
         seen_urls: set[str] = set()
@@ -146,6 +147,7 @@ class RssFeedLoader:
 
         resolved_max_results = max_results if max_results is not None else self.default_max_results
         resolved_max_results = max(1, int(resolved_max_results))
+        resolved_max_results = min(resolved_max_results, GNEWS_MAX_RESULTS_CAP)
 
         return GNews(
             language=self.language,

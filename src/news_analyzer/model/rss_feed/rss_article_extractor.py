@@ -68,13 +68,15 @@ class RssArticleExtractor:
         published_at = article.publish_date.isoformat() if article.publish_date else None
 
         if not extracted_text:
+            # Missing fulltext is common on many publisher pages.
+            # Caller can safely fall back to title+description without warning noise.
             return ExtractedArticle(
                 url=clean_url,
                 title=extracted_title,
                 text="",
                 published_at=published_at,
-                error="Article text is empty.",
-                status="warning",
+                error="",
+                status="success",
             )
 
         return ExtractedArticle(
