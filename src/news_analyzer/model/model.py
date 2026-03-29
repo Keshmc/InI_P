@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from news_analyzer.model.analysis import EntityAnalyzer, EntityResult, SentimentAnalyzer
 from news_analyzer.model.datastore import DatastoreRepository
@@ -69,7 +69,11 @@ class NewsAnalysisPipeline:
         self.article_extractor = article_extractor
         self.datastore_repository = datastore_repository
 
-    def run_search(self, request: SearchRequest) -> SearchResult:
+    def run_search(
+        self,
+        request: SearchRequest,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> SearchResult:
         """Run end-to-end processing for one user request."""
         mode = request.mode.strip().lower()
         if mode not in {"keyword", "topic"}:
@@ -82,6 +86,9 @@ class NewsAnalysisPipeline:
             period=request.period,
             max_results=request.max_results,
         )
+        total_articles = len(raw_articles)
+        if progress_callback is not None:
+            progress_callback(0, total_articles)
 
         sentiment_analyzer = SentimentAnalyzer(
             use_mock=request.use_mock_nlp,
@@ -99,7 +106,7 @@ class NewsAnalysisPipeline:
         warnings: list[str] = []
         errors: list[str] = []
 
-        for item in raw_articles:
+        for index, item in enumerate(raw_articles, start=1):
             base_text = f"{item.title}. {item.description}".strip()
             text_for_analysis = base_text
             extracted_title = item.title
@@ -172,6 +179,8 @@ class NewsAnalysisPipeline:
                 "entity_provider": entity_result.provider,
             }
             records.append(record)
+            if progress_callback is not None:
+                progress_callback(index, total_articles)
 
         if request.store_to_datastore and self.datastore_repository and self.datastore_repository.is_available:
             self.datastore_repository.save_records(records)

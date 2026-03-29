@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from news_analyzer.model.datastore import DatastoreQuery, DatastoreRepository
 from news_analyzer.model.model import NewsAnalysisPipeline, SearchRequest, SearchResult
@@ -171,9 +171,13 @@ class NewsPresenter:
             industry_sector=str(view_data.get("industry_sector", "")).strip(),
         )
 
-    def run_news_search(self, request: SearchRequest) -> PresenterResponse:
+    def run_news_search(
+        self,
+        request: SearchRequest,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> PresenterResponse:
         """Execute search pipeline and prepare view-friendly payload."""
-        result = self.pipeline.run_search(request)
+        result = self.pipeline.run_search(request, progress_callback=progress_callback)
         self.last_search_result = result
 
         payload = {

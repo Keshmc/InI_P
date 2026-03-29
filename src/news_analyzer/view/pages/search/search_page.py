@@ -165,6 +165,53 @@ class NewsSearchPage:
         with col_meter:
             render_sentiment_meter(avg_sentiment)
 
+        sentiment_distribution = self._build_sentiment_distribution(records)
+        st.markdown("#### Sentiment Distribution")
+        pie_values = [
+            {"label": "Positive", "count": int(sentiment_distribution.get("positive", 0))},
+            {"label": "Neutral", "count": int(sentiment_distribution.get("neutral", 0))},
+            {"label": "Negative", "count": int(sentiment_distribution.get("negative", 0))},
+        ]
+        total_distribution = sum(item["count"] for item in pie_values)
+        if total_distribution <= 0:
+            st.info("No sentiment distribution available yet.")
+        else:
+            chart_col, table_col = st.columns([2.6, 1.4])
+            with chart_col:
+                st.vega_lite_chart(
+                    pie_values,
+                    {
+                        "mark": {"type": "arc", "innerRadius": 20},
+                        "encoding": {
+                            "theta": {"field": "count", "type": "quantitative"},
+                            "color": {
+                                "field": "label",
+                                "type": "nominal",
+                                "scale": {
+                                    "domain": ["Positive", "Neutral", "Negative"],
+                                    "range": ["#1e8449", "#f4d03f", "#c0392b"],
+                                },
+                                "legend": {"title": "Label"},
+                            },
+                            "tooltip": [
+                                {"field": "label", "type": "nominal", "title": "Label"},
+                                {"field": "count", "type": "quantitative", "title": "Articles"},
+                            ],
+                        },
+                    },
+                    use_container_width=True,
+                )
+            with table_col:
+                st.dataframe(
+                    [
+                        {"Label": "Positive", "Articles": pie_values[0]["count"]},
+                        {"Label": "Neutral", "Articles": pie_values[1]["count"]},
+                        {"Label": "Negative", "Articles": pie_values[2]["count"]},
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+
         st.divider()
         st.markdown("#### Top Extracted Entities")
         entity_counts = self._build_entity_counts(records)
@@ -245,6 +292,7 @@ class NewsSearchPage:
                 "published_date": str(row.get("published_date", "")).strip(),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
+                "sentiment_label": self._sentiment_label(float(row.get("sentiment_score", 0.0))),
                 "status": str(row.get("status", "")).strip(),
                 "url": str(row.get("url", "")).strip(),
             }
@@ -267,6 +315,50 @@ class NewsSearchPage:
                         counter[name] += 1
         return counter.most_common()
 
+    @staticmethod
+    def _sentiment_label(score: float) -> str:
+        if score > 0.1:
+            return "positive"
+        if score < -0.1:
+            return "negative"
+        return "neutral"
+
+    def _build_sentiment_distribution(self, records: list[dict[str, Any]]) -> dict[str, int]:
+        counts: Counter[str] = Counter()
+        for row in records:
+            score = float(row.get("sentiment_score", 0.0))
+            counts[self._sentiment_label(score)] += 1
+        return {
+            "positive": int(counts.get("positive", 0)),
+            "neutral": int(counts.get("neutral", 0)),
+            "negative": int(counts.get("negative", 0)),
+        }
+
     def _show_loading_screen(self, request: SearchRequest):
-        with st.spinner("Loading analysis..."):
-            return self.presenter.run_news_search(request)
+        progress = st.progress(0.0, text="Loading analysis. This can take some time.")
+        status_line = st.empty()
+
+        def _on_progress(processed: int, total: int) -> None:
+            safe_total = max(int(total), 1)
+            safe_processed = max(0, min(int(processed), safe_total))
+            ratio = safe_processed / safe_total
+            progress.progress(
+                ratio,
+                text=f"Loading analysis. This can take some time. {safe_processed} out of {safe_total} loaded articles analyzed.",
+            )
+            status_line.caption(f"Status: {safe_processed}/{safe_total} analyzed")
+
+        response = self.presenter.run_news_search(request, progress_callback=_on_progress)
+
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        records = payload.get("records", [])
+        final_total = max(len(records), 1)
+        progress.progress(
+            1.0,
+            text=(
+                "Loading analysis. This can take some time. "
+                f"{len(records)} out of {final_total} loaded articles analyzed."
+            ),
+        )
+        status_line.caption("Status: analysis completed")
+        return response
