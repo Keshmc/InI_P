@@ -1,0 +1,42 @@
+app:
+  default_symbols:
+    - NVDA
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - TSLA
+  default_symbol: NVDA
+  default_article_limit: 5
+  use_mock_analysis: false
+  default_full_article_extraction: false
+  default_include_entities: false
+
+rss:
+  language: en
+  country: US
+  period: 1d
+  max_results: 25
+
+extractor:
+  request_timeout_seconds: 5
+  max_chars: 15000
+
+analyzer:
+  max_chars: 4000
+  fallback_to_mock_on_error: true
+
+recommendation:
+  buy_score_threshold: 0.25
+  sell_score_threshold: -0.25
+  strong_magnitude_threshold: 0.60
+
+datastore:
+  project_id: financial-news-analyzer-489418
+  kind: AnalyzedArticle
+  database_id: database
+  credentials_path: secrets/financial-news-analyzer-489418-77b36e4b020c.json
+
+gcp:
+  project_id: financial-news-analyzer-489418
+  credentials_path: secrets/financial-news-analyzer-489418-77b36e4b020c.json
