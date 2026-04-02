@@ -44,10 +44,6 @@ class NewsSearchPage:
 
         with form_col:
             st.title("News Search")
-            st.write(
-                "Pipeline: bestehende Firestore-Artikel uberspringen, neue Artikel analysieren,"
-                " speichern und danach fur die Darstellung erneut aus Firestore laden."
-            )
 
             if st.session_state.get("search_mode") not in {"Keyword", "Trend"}:
                 st.session_state["search_mode"] = "Keyword"

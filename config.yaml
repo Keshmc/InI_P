@@ -40,3 +40,19 @@ datastore:
 gcp:
   project_id: financial-news-analyzer-489418
   credentials_path: secrets/financial-news-analyzer-489418-77b36e4b020c.json
+
+long_term_trends:
+  enabled: true
+  interval_minutes: 360
+  run_on_startup: true
+  period: 1d
+  max_results: 100
+  extract_full_text: true
+  include_entities: true
+  tickers:
+    - Trump
+    - Iran
+    - Oil
+    - Gold
+    - NVDA
+    - USA
