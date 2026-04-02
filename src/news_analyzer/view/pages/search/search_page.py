@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
+import csv
 from datetime import datetime, timezone
+import io
+import json
 from typing import Any
+import zipfile
 
 from dateutil import parser as date_parser
 import streamlit as st
@@ -13,17 +17,8 @@ from news_analyzer.model import PipelineProgress, SearchRequest
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
 
-TOPIC_OPTIONS = [
-    "WORLD",
-    "NATION",
-    "BUSINESS",
-    "TECHNOLOGY",
-    "ENTERTAINMENT",
-    "SPORTS",
-    "SCIENCE",
-    "HEALTH",
-]
 PERIOD_OPTIONS = ["1h", "6h", "12h", "1d", "3d", "7d"]
+TREND_OPTIONS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "USA"]
 
 
 class NewsSearchPage:
@@ -54,14 +49,20 @@ class NewsSearchPage:
                 " speichern und danach fur die Darstellung erneut aus Firestore laden."
             )
 
-            mode = st.radio("Search Mode", options=["Keyword", "Topic"], horizontal=True, key="search_mode")
+            if st.session_state.get("search_mode") not in {"Keyword", "Trend"}:
+                st.session_state["search_mode"] = "Keyword"
+
+            mode = st.radio("Search Mode", options=["Keyword", "Trend"], horizontal=True, key="search_mode")
 
             keyword = ""
             topic = ""
             if mode == "Keyword":
                 keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
             else:
-                topic = st.selectbox("Topic", options=TOPIC_OPTIONS, key="search_topic")
+                if st.session_state.get("search_topic") not in TREND_OPTIONS:
+                    st.session_state["search_topic"] = TREND_OPTIONS[0]
+                topic = st.selectbox("Trend Ticker", options=TREND_OPTIONS, key="search_topic")
+                keyword = topic
 
             period_default_index = PERIOD_OPTIONS.index("1d")
             period = st.selectbox(
@@ -71,6 +72,8 @@ class NewsSearchPage:
                 key="search_period",
             )
             st.caption("All available matches in the selected time interval will be processed.")
+            if mode == "Trend":
+                st.caption("Trend-Ticker werden als Keyword-Suche ausgefuhrt und fortlaufend in der Datenbank gesammelt.")
 
             with st.expander("Advanced Settings", expanded=False):
                 col_a, col_b = st.columns(2)
@@ -94,7 +97,7 @@ class NewsSearchPage:
                 return
 
             request = SearchRequest(
-                mode=mode.lower(),
+                mode="keyword",
                 keyword=keyword.strip(),
                 topic=topic.strip().upper(),
                 period=period,
@@ -107,7 +110,7 @@ class NewsSearchPage:
                 industry_sector="",
             )
 
-            if request.mode == "keyword" and not request.keyword:
+            if not request.keyword:
                 st.error("Please enter a keyword.")
                 return
 
@@ -263,8 +266,9 @@ class NewsSearchPage:
         st.divider()
         st.markdown("#### Top Extracted Entities")
         entity_counts = self._build_entity_counts(records)
+        top_entity_rows = [{"entity": name, "count": count} for name, count in entity_counts[:15]]
         if entity_counts:
-            chart_rows = [{"Entity": name, "Count": count} for name, count in entity_counts[:15]]
+            chart_rows = [{"Entity": item["entity"], "Count": item["count"]} for item in top_entity_rows]
             st.bar_chart(chart_rows, x="Entity", y="Count", horizontal=True)
         else:
             st.info("No entities extracted.")
@@ -273,6 +277,22 @@ class NewsSearchPage:
         st.markdown("#### Extracted Data")
         filtered_rows = self._render_table_filters_and_data(records)
         st.caption(f"Showing: {len(filtered_rows)} / {len(records)} rows")
+
+        st.divider()
+        st.markdown("#### Export")
+        export_sections = self._build_export_sections(
+            request=request,
+            summary=summary,
+            records=records,
+            filtered_rows=filtered_rows,
+            sentiment_distribution=sentiment_distribution,
+            top_entities=top_entity_rows,
+            trend_rows=trend_rows,
+        )
+        self._render_export_actions(
+            sections=export_sections,
+            file_stem=self._build_export_file_stem(request=request),
+        )
 
         col_clear = st.columns([1, 2])[0]
         with col_clear:
@@ -313,12 +333,14 @@ class NewsSearchPage:
                 continue
 
             if text_filter:
+                entity_text = self._entities_to_display(row.get("entities", []))
                 searchable = " ".join(
                     [
                         str(row.get("title", "")),
                         str(row.get("source", "")),
                         str(row.get("query", "")),
                         str(row.get("topic", "")),
+                        entity_text,
                     ]
                 ).lower()
                 if text_filter not in searchable:
@@ -334,6 +356,7 @@ class NewsSearchPage:
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
                 "sentiment_label": self._sentiment_label(float(row.get("sentiment_score", 0.0))),
+                "entities": self._entities_to_display(row.get("entities", [])),
                 "status": str(row.get("status", "")).strip(),
                 "url": str(row.get("url", "")).strip(),
             }
@@ -341,6 +364,183 @@ class NewsSearchPage:
         ]
         st.dataframe(table_rows, width="stretch", hide_index=True)
         return filtered
+
+    def _build_export_sections(
+        self,
+        request: dict[str, Any],
+        summary: dict[str, Any],
+        records: list[dict[str, Any]],
+        filtered_rows: list[dict[str, Any]],
+        sentiment_distribution: dict[str, int],
+        top_entities: list[dict[str, Any]],
+        trend_rows: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        summary_row = {
+            "mode": str(request.get("mode", "")).strip(),
+            "keyword": str(request.get("keyword", "")).strip(),
+            "topic": str(request.get("topic", "")).strip(),
+            "period": str(request.get("period", "")).strip(),
+            "articles_found": int(summary.get("articles_found", 0)),
+            "existing_articles": int(summary.get("existing_articles", 0)),
+            "new_articles": int(summary.get("new_articles", 0)),
+            "analyzed_articles": int(summary.get("analyzed_articles", 0)),
+            "saved_articles": int(summary.get("saved_articles", 0)),
+            "loaded_articles": int(summary.get("loaded_articles", len(records))),
+            "avg_sentiment_score": float(summary.get("avg_sentiment_score", 0.0)),
+            "avg_sentiment_magnitude": float(summary.get("avg_sentiment_magnitude", 0.0)),
+            "positive_count": int(summary.get("positive_count", 0)),
+            "neutral_count": int(summary.get("neutral_count", 0)),
+            "negative_count": int(summary.get("negative_count", 0)),
+        }
+
+        sentiment_rows = [
+            {"label": "positive", "count": int(sentiment_distribution.get("positive", 0))},
+            {"label": "neutral", "count": int(sentiment_distribution.get("neutral", 0))},
+            {"label": "negative", "count": int(sentiment_distribution.get("negative", 0))},
+        ]
+        extracted_filtered_rows = self._build_extracted_table_rows(filtered_rows)
+        extracted_all_rows = self._build_extracted_table_rows(records)
+        article_rows = [self._build_article_export_row(row) for row in records]
+
+        return {
+            "summary": [summary_row],
+            "sentiment_distribution": sentiment_rows,
+            "top_entities": top_entities,
+            "sentiment_trend": trend_rows,
+            "extracted_data_filtered": extracted_filtered_rows,
+            "extracted_data_all": extracted_all_rows,
+            "articles_full": article_rows,
+        }
+
+    def _render_export_actions(self, sections: dict[str, list[dict[str, Any]]], file_stem: str) -> None:
+        csv_zip_bytes = self._build_csv_zip_bytes(sections)
+        json_bytes = json.dumps(sections, ensure_ascii=True, indent=2).encode("utf-8")
+        excel_bytes, excel_error = self._build_excel_bytes(sections)
+
+        col_csv, col_json, col_excel = st.columns(3)
+        with col_csv:
+            st.download_button(
+                "CSV Export (ZIP)",
+                data=csv_zip_bytes,
+                file_name=f"{file_stem}_tables.zip",
+                mime="application/zip",
+            )
+        with col_json:
+            st.download_button(
+                "JSON Export",
+                data=json_bytes,
+                file_name=f"{file_stem}_tables.json",
+                mime="application/json",
+            )
+        with col_excel:
+            st.download_button(
+                "Excel Export",
+                data=excel_bytes or b"",
+                file_name=f"{file_stem}_tables.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                disabled=excel_bytes is None,
+            )
+        if excel_error:
+            st.caption(excel_error)
+
+    def _build_csv_zip_bytes(self, sections: dict[str, list[dict[str, Any]]]) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for name, rows in sections.items():
+                csv_text = self._rows_to_csv_text(rows)
+                archive.writestr(f"{name}.csv", csv_text)
+        return buffer.getvalue()
+
+    def _rows_to_csv_text(self, rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return ""
+
+        fieldnames: list[str] = list(rows[0].keys())
+        for row in rows[1:]:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: self._to_export_cell(row.get(key)) for key in fieldnames})
+        return output.getvalue()
+
+    def _build_excel_bytes(self, sections: dict[str, list[dict[str, Any]]]) -> tuple[bytes | None, str | None]:
+        try:
+            import pandas as pd  # type: ignore[import-not-found]
+        except ImportError:
+            return None, "Excel export disabled: install pandas + openpyxl."
+
+        buffer = io.BytesIO()
+        try:
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                for name, rows in sections.items():
+                    dataframe = pd.DataFrame(rows)
+                    if dataframe.empty:
+                        dataframe = pd.DataFrame([{}])
+                    dataframe.to_excel(writer, sheet_name=name[:31], index=False)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Excel export failed: {exc}"
+        return buffer.getvalue(), None
+
+    def _build_extracted_table_rows(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "title": str(row.get("title", "")).strip(),
+                "source": str(row.get("source", "")).strip(),
+                "published_date": str(row.get("published_date", "")).strip(),
+                "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
+                "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
+                "sentiment_label": self._sentiment_label(float(row.get("sentiment_score", 0.0))),
+                "entities": self._entities_to_display(row.get("entities", [])),
+                "status": str(row.get("status", "")).strip(),
+                "url": str(row.get("url", "")).strip(),
+            }
+            for row in records
+        ]
+
+    def _build_article_export_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        export_row: dict[str, Any] = {}
+        for key, value in row.items():
+            export_row[str(key)] = self._to_export_cell(value)
+        export_row["entities_display"] = self._entities_to_display(row.get("entities", []))
+        return export_row
+
+    def _build_export_file_stem(self, request: dict[str, Any]) -> str:
+        mode = str(request.get("mode", "search")).strip().lower()
+        query = str(request.get("keyword", "")).strip() if mode == "keyword" else str(request.get("topic", "")).strip()
+        clean_query = "".join(ch if ch.isalnum() else "_" for ch in query)[:40].strip("_")
+        if not clean_query:
+            clean_query = "query"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return f"news_analysis_{clean_query}_{timestamp}"
+
+    @staticmethod
+    def _to_export_cell(value: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=True, sort_keys=True)
+        return value
+
+    @staticmethod
+    def _entities_to_display(raw_entities: Any) -> str:
+        if not isinstance(raw_entities, list):
+            return ""
+        parts: list[str] = []
+        for item in raw_entities:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            entity_type = str(item.get("entity_type", "")).strip().upper()
+            if not name:
+                continue
+            if entity_type:
+                parts.append(f"{name} ({entity_type})")
+            else:
+                parts.append(name)
+        return ", ".join(parts)
 
     @staticmethod
     def _build_entity_counts(records: list[dict[str, Any]]) -> list[tuple[str, int]]:
