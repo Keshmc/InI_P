@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from news_analyzer.model.datastore import DatastoreQuery, DatastoreRepository
-from news_analyzer.model.model import NewsAnalysisPipeline, SearchRequest, SearchResult
+from news_analyzer.model.model import NewsAnalysisPipeline, PipelineProgress, SearchRequest, SearchResult
 
 
 @dataclass
@@ -30,7 +30,7 @@ class NewsPresenter:
         self.last_search_result: SearchResult | None = None
 
     def run_startup_check(self) -> PresenterResponse:
-        """Run startup checks for RSS, credentials, and datastore access."""
+        """Run startup checks for RSS, credentials, and Firestore access."""
         checks: list[dict[str, str]] = []
 
         rss_loader = self.pipeline.rss_loader
@@ -48,26 +48,26 @@ class NewsPresenter:
             checks.append({"name": "RSS Feed", "status": "error", "message": f"RSS check failed: {exc}"})
 
         if self.datastore_repository is None:
-            checks.append({"name": "Datastore Client", "status": "error", "message": "Datastore repository not configured."})
+            checks.append({"name": "Firestore Client", "status": "error", "message": "Firestore repository not configured."})
             overall_ok = False
         else:
             if self.datastore_repository.is_available:
                 checks.append(
                     {
-                        "name": "Datastore Client",
+                        "name": "Firestore Client",
                         "status": "ok",
                         "message": (
                             f"Client initialized (project={self.datastore_repository.config.project_id or 'default'}, "
-                            f"database={self.datastore_repository.database_id}, kind={self.datastore_repository.config.kind})."
+                            f"database={self.datastore_repository.database_id}, collection={self.datastore_repository.collection_name})."
                         ),
                     }
                 )
             else:
                 checks.append(
                     {
-                        "name": "Datastore Client",
+                        "name": "Firestore Client",
                         "status": "error",
-                        "message": self.datastore_repository.init_error or "Datastore client could not be initialized.",
+                        "message": self.datastore_repository.init_error or "Firestore client could not be initialized.",
                     }
                 )
 
@@ -103,7 +103,7 @@ class NewsPresenter:
                     {
                         "name": "Credentials Hint",
                         "status": "warn",
-                        "message": "Set GOOGLE_APPLICATION_CREDENTIALS or datastore.credentials_path for deterministic startup.",
+                        "message": "Set GOOGLE_APPLICATION_CREDENTIALS or firestore.credentials_path for deterministic startup.",
                     }
                 )
 
@@ -112,7 +112,7 @@ class NewsPresenter:
                 if self.datastore_repository.last_error:
                     checks.append(
                         {
-                            "name": "Datastore Access",
+                            "name": "Firestore Access",
                             "status": "error",
                             "message": self.datastore_repository.last_error,
                         }
@@ -120,7 +120,7 @@ class NewsPresenter:
                 else:
                     checks.append(
                         {
-                            "name": "Datastore Access",
+                            "name": "Firestore Access",
                             "status": "ok",
                             "message": "Read access test succeeded.",
                         }
@@ -174,7 +174,7 @@ class NewsPresenter:
     def run_news_search(
         self,
         request: SearchRequest,
-        progress_callback: Callable[[int, int], None] | None = None,
+        progress_callback: Callable[[PipelineProgress], None] | None = None,
     ) -> PresenterResponse:
         """Execute search pipeline and prepare view-friendly payload."""
         result = self.pipeline.run_search(request, progress_callback=progress_callback)
@@ -195,13 +195,17 @@ class NewsPresenter:
                 payload=payload,
             )
 
-        message = f"Search finished. {result.summary.articles_found} article(s) analyzed."
+        message = (
+            f"Search finished. {result.summary.articles_found} fetched, "
+            f"{result.summary.existing_articles} already in Firestore, "
+            f"{result.summary.new_articles} new."
+        )
         if result.warnings:
             message += f" {len(result.warnings)} warning(s)."
         return PresenterResponse(ok=True, message=message, payload=payload)
 
     def store_last_search_to_datastore(self) -> PresenterResponse:
-        """Persist latest analyzed records to Datastore."""
+        """Persist latest analyzed records to Firestore."""
         if self.last_search_result is None:
             return PresenterResponse(
                 ok=False,
@@ -212,14 +216,14 @@ class NewsPresenter:
         if self.datastore_repository is None or not self.datastore_repository.is_available:
             return PresenterResponse(
                 ok=False,
-                message="Datastore is not available.",
+                message="Firestore is not available.",
                 payload={"saved_count": 0},
             )
 
         saved_count = self.datastore_repository.save_records(self.last_search_result.records)
         total = len(self.last_search_result.records)
         if saved_count < total:
-            detail = self.datastore_repository.last_error or "Unknown datastore write issue."
+            detail = self.datastore_repository.last_error or "Unknown Firestore write issue."
             return PresenterResponse(
                 ok=False,
                 message=f"Stored {saved_count}/{total} record(s). Last error: {detail}",
@@ -227,16 +231,16 @@ class NewsPresenter:
             )
         return PresenterResponse(
             ok=True,
-            message=f"Stored {saved_count} record(s) in Datastore.",
+            message=f"Stored {saved_count} record(s) in Firestore.",
             payload={"saved_count": saved_count},
         )
 
     def query_datastore(self, query: DatastoreQuery) -> PresenterResponse:
-        """Query Datastore with filters and return records + summary."""
+        """Query Firestore with filters and return records + summary."""
         if self.datastore_repository is None or not self.datastore_repository.is_available:
             return PresenterResponse(
                 ok=False,
-                message="Datastore is not available.",
+                message="Firestore is not available.",
                 payload={"records": [], "count": 0},
             )
 
@@ -244,7 +248,7 @@ class NewsPresenter:
         if self.datastore_repository.last_error:
             return PresenterResponse(
                 ok=False,
-                message=f"Datastore query failed: {self.datastore_repository.last_error}",
+                message=f"Firestore query failed: {self.datastore_repository.last_error}",
                 payload={"records": [], "count": 0, "error": self.datastore_repository.last_error},
             )
 
@@ -265,6 +269,6 @@ class NewsPresenter:
         }
         return PresenterResponse(
             ok=True,
-            message=f"Loaded {len(records)} record(s) from Datastore.",
+            message=f"Loaded {len(records)} record(s) from Firestore.",
             payload=payload,
         )

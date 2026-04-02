@@ -2,27 +2,16 @@
 
 from __future__ import annotations
 
-from enum import Enum
-
 import streamlit as st
 
 
-class PageKey(str, Enum):
-    NEWS_SEARCH = "news_search"
-    DATASTORE = "datastore"
+NEWS_SEARCH_PAGE = "news_search"
 
 
 def render_sidebar(default_key: str) -> str:
     """Render app sidebar and return selected page key."""
+    del default_key
     st.sidebar.title("Navigation")
-    selected = default_key
-    col_a, col_b = st.sidebar.columns(2)
-    if col_a.button("News Search", width="stretch"):
-        selected = PageKey.NEWS_SEARCH.value
-    if col_b.button("Datastore", width="stretch"):
-        selected = PageKey.DATASTORE.value
-
-    active_label = "News Search" if selected == PageKey.NEWS_SEARCH.value else "Datastore"
-    st.sidebar.caption(f"Active: {active_label}")
-    st.sidebar.caption("Datastore will be expanded in a later step.")
-    return str(selected)
+    st.sidebar.caption("Active: News Search")
+    st.sidebar.caption("Firestore load/save happens automatically in the search pipeline.")
+    return NEWS_SEARCH_PAGE

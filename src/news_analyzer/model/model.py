@@ -37,12 +37,32 @@ class SearchSummary:
     """Computed summary statistics for a run."""
 
     articles_found: int
+    existing_articles: int
+    new_articles: int
+    analyzed_articles: int
+    saved_articles: int
+    loaded_articles: int
     avg_sentiment_score: float
     avg_sentiment_magnitude: float
     positive_count: int
     neutral_count: int
     negative_count: int
     top_entities: list[dict[str, Any]]
+
+
+@dataclass
+class PipelineProgress:
+    """Progress payload for multi-stage pipeline updates."""
+
+    phase: str
+    processed: int
+    total: int
+    message: str
+    existing_articles: int = 0
+    new_articles: int = 0
+    analyzed_articles: int = 0
+    saved_articles: int = 0
+    loaded_articles: int = 0
 
 
 @dataclass
@@ -57,7 +77,7 @@ class SearchResult:
 
 
 class NewsAnalysisPipeline:
-    """Orchestrate RSS -> extraction -> sentiment/entities -> optional persistence."""
+    """Orchestrate RSS -> dedupe -> analysis -> Firestore save -> Firestore reload."""
 
     def __init__(
         self,
@@ -72,7 +92,7 @@ class NewsAnalysisPipeline:
     def run_search(
         self,
         request: SearchRequest,
-        progress_callback: Callable[[int, int], None] | None = None,
+        progress_callback: Callable[[PipelineProgress], None] | None = None,
     ) -> SearchResult:
         """Run end-to-end processing for one user request."""
         mode = request.mode.strip().lower()
@@ -87,8 +107,45 @@ class NewsAnalysisPipeline:
             max_results=request.max_results,
         )
         total_articles = len(raw_articles)
-        if progress_callback is not None:
-            progress_callback(0, total_articles)
+        self._emit_progress(
+            callback=progress_callback,
+            phase="collect",
+            processed=total_articles,
+            total=total_articles,
+            message=f"Feed loaded. {total_articles} article(s) collected.",
+        )
+
+        records: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        errors: list[str] = []
+        saved_count = 0
+
+        urls = [item.url.strip() for item in raw_articles if item.url.strip()]
+        existing_urls: set[str] = set()
+        if self.datastore_repository and self.datastore_repository.is_available:
+            existing_urls = self.datastore_repository.get_existing_urls(urls)
+            if self.datastore_repository.last_error:
+                warnings.append(self.datastore_repository.last_error)
+        elif urls:
+            reason = ""
+            if self.datastore_repository:
+                reason = str(self.datastore_repository.init_error or "").strip()
+            reason_suffix = f" Reason: {reason}" if reason else ""
+            warnings.append(
+                "Firestore unavailable: duplicate check disabled. "
+                f"All fetched articles will be analyzed in-memory.{reason_suffix}"
+            )
+
+        existing_articles = len(existing_urls)
+        new_articles = 0
+        self._emit_progress(
+            callback=progress_callback,
+            phase="check_existing",
+            processed=existing_articles,
+            total=total_articles,
+            message=f"Duplicate check completed. {existing_articles} article(s) already in Firestore.",
+            existing_articles=existing_articles,
+        )
 
         sentiment_analyzer = SentimentAnalyzer(
             use_mock=request.use_mock_nlp,
@@ -102,11 +159,11 @@ class NewsAnalysisPipeline:
             fallback_to_mock_on_error=request.fallback_to_mock_on_error,
         )
 
-        records: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        errors: list[str] = []
+        articles_to_process = [item for item in raw_articles if item.url.strip() not in existing_urls]
+        new_articles = len(articles_to_process)
+        analyzed_count = 0
 
-        for index, item in enumerate(raw_articles, start=1):
+        for index, item in enumerate(articles_to_process, start=1):
             base_text = f"{item.title}. {item.description}".strip()
             text_for_analysis = base_text
             extracted_title = item.title
@@ -177,18 +234,92 @@ class NewsAnalysisPipeline:
                 "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
                 "sentiment_provider": sentiment.provider,
                 "entity_provider": entity_result.provider,
+                "raw_article": {
+                    "title": item.title,
+                    "description": item.description,
+                    "url": item.url,
+                    "published_date": item.published_date,
+                    "source": item.source,
+                    "search_mode": item.search_mode,
+                    "query": item.query,
+                    "topic": item.topic,
+                },
             }
             records.append(record)
-            if progress_callback is not None:
-                progress_callback(index, total_articles)
+            analyzed_count = index
+            self._emit_progress(
+                callback=progress_callback,
+                phase="analyze",
+                processed=index,
+                total=max(new_articles, 1),
+                message=f"Analyzing new articles: {index}/{new_articles}.",
+                existing_articles=existing_articles,
+                new_articles=new_articles,
+                analyzed_articles=analyzed_count,
+            )
 
-        if request.store_to_datastore and self.datastore_repository and self.datastore_repository.is_available:
-            self.datastore_repository.save_records(records)
+        if self.datastore_repository and self.datastore_repository.is_available and records:
+            saved_count = self.datastore_repository.save_records(records)
+            if self.datastore_repository.last_error:
+                warnings.append(self.datastore_repository.last_error)
+            self._emit_progress(
+                callback=progress_callback,
+                phase="persist",
+                processed=saved_count,
+                total=max(new_articles, 1),
+                message=f"Saved {saved_count}/{new_articles} new article(s) to Firestore.",
+                existing_articles=existing_articles,
+                new_articles=new_articles,
+                analyzed_articles=analyzed_count,
+                saved_articles=saved_count,
+            )
 
-        summary = self._build_summary(records)
+        if self.datastore_repository and self.datastore_repository.is_available:
+            loaded_records = self.datastore_repository.load_records_for_urls(urls)
+            if self.datastore_repository.last_error:
+                errors.append(self.datastore_repository.last_error)
+            final_records = loaded_records
+        else:
+            final_records = records
+
+        loaded_count = len(final_records)
+        self._emit_progress(
+            callback=progress_callback,
+            phase="reload",
+            processed=loaded_count,
+            total=max(total_articles, 1),
+            message=f"Loaded {loaded_count}/{total_articles} article(s) from Firestore for display.",
+            existing_articles=existing_articles,
+            new_articles=new_articles,
+            analyzed_articles=analyzed_count,
+            saved_articles=saved_count,
+            loaded_articles=loaded_count,
+        )
+
+        summary = self._build_summary(
+            records=final_records,
+            articles_found=total_articles,
+            existing_articles=existing_articles,
+            new_articles=new_articles,
+            analyzed_articles=analyzed_count,
+            saved_articles=saved_count,
+            loaded_articles=loaded_count,
+        )
+        self._emit_progress(
+            callback=progress_callback,
+            phase="done",
+            processed=loaded_count,
+            total=max(total_articles, 1),
+            message="Pipeline completed.",
+            existing_articles=existing_articles,
+            new_articles=new_articles,
+            analyzed_articles=analyzed_count,
+            saved_articles=saved_count,
+            loaded_articles=loaded_count,
+        )
         return SearchResult(
             request=request,
-            records=records,
+            records=final_records,
             summary=summary,
             warnings=warnings,
             errors=errors,
@@ -203,10 +334,23 @@ class NewsAnalysisPipeline:
         return "success"
 
     @staticmethod
-    def _build_summary(records: list[dict[str, Any]]) -> SearchSummary:
+    def _build_summary(
+        records: list[dict[str, Any]],
+        articles_found: int,
+        existing_articles: int,
+        new_articles: int,
+        analyzed_articles: int,
+        saved_articles: int,
+        loaded_articles: int,
+    ) -> SearchSummary:
         if not records:
             return SearchSummary(
-                articles_found=0,
+                articles_found=articles_found,
+                existing_articles=existing_articles,
+                new_articles=new_articles,
+                analyzed_articles=analyzed_articles,
+                saved_articles=saved_articles,
+                loaded_articles=loaded_articles,
                 avg_sentiment_score=0.0,
                 avg_sentiment_magnitude=0.0,
                 positive_count=0,
@@ -234,11 +378,46 @@ class NewsAnalysisPipeline:
         top_entities = [{"name": name, "count": count} for name, count in entity_counter.most_common(15)]
 
         return SearchSummary(
-            articles_found=len(records),
+            articles_found=articles_found,
+            existing_articles=existing_articles,
+            new_articles=new_articles,
+            analyzed_articles=analyzed_articles,
+            saved_articles=saved_articles,
+            loaded_articles=loaded_articles,
             avg_sentiment_score=round(sum(scores) / len(scores), 4),
             avg_sentiment_magnitude=round(sum(magnitudes) / len(magnitudes), 4),
             positive_count=positive_count,
             neutral_count=neutral_count,
             negative_count=negative_count,
             top_entities=top_entities,
+        )
+
+    @staticmethod
+    def _emit_progress(
+        callback: Callable[[PipelineProgress], None] | None,
+        phase: str,
+        processed: int,
+        total: int,
+        message: str,
+        existing_articles: int = 0,
+        new_articles: int = 0,
+        analyzed_articles: int = 0,
+        saved_articles: int = 0,
+        loaded_articles: int = 0,
+    ) -> None:
+        if callback is None:
+            return
+
+        callback(
+            PipelineProgress(
+                phase=phase,
+                processed=processed,
+                total=max(total, 1),
+                message=message,
+                existing_articles=existing_articles,
+                new_articles=new_articles,
+                analyzed_articles=analyzed_articles,
+                saved_articles=saved_articles,
+                loaded_articles=loaded_articles,
+            )
         )

@@ -1,5 +1,19 @@
-"""Datastore model package."""
+"""Datastore/Firestore model package."""
 
-from .datastore_repository import DatastoreConfig, DatastoreQuery, DatastoreRepository
+from .datastore_repository import (
+    DatastoreConfig,
+    DatastoreQuery,
+    DatastoreRepository,
+    FirestoreConfig,
+    FirestoreQuery,
+    FirestoreRepository,
+)
 
-__all__ = ["DatastoreConfig", "DatastoreQuery", "DatastoreRepository"]
+__all__ = [
+    "DatastoreConfig",
+    "DatastoreQuery",
+    "DatastoreRepository",
+    "FirestoreConfig",
+    "FirestoreQuery",
+    "FirestoreRepository",
+]

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
+from dateutil import parser as date_parser
 import streamlit as st
 
-from news_analyzer.model import SearchRequest
+from news_analyzer.model import PipelineProgress, SearchRequest
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
 
@@ -28,6 +30,7 @@ class NewsSearchPage:
     """Owns state + rendering for the complete news search flow."""
 
     _SEARCH_PAYLOAD_KEY = "news_search_payload"
+    _PROGRESS_PHASES = ["collect", "check_existing", "analyze", "persist", "reload", "done"]
 
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
@@ -46,7 +49,10 @@ class NewsSearchPage:
 
         with form_col:
             st.title("News Search")
-            st.write("Search news by keyword or topic and analyze sentiment and extracted entities.")
+            st.write(
+                "Pipeline: bestehende Firestore-Artikel uberspringen, neue Artikel analysieren,"
+                " speichern und danach fur die Darstellung erneut aus Firestore laden."
+            )
 
             mode = st.radio("Search Mode", options=["Keyword", "Topic"], horizontal=True, key="search_mode")
 
@@ -82,7 +88,7 @@ class NewsSearchPage:
                 with col_b:
                     st.info("No artificial UI cap. Provider limits are handled automatically.")
 
-            submitted = st.button("Search", type="primary", width="stretch", key="search_submit")
+            submitted = st.button("Pipeline starten", type="primary", width="stretch", key="search_submit")
 
             if not submitted:
                 return
@@ -97,7 +103,7 @@ class NewsSearchPage:
                 include_entities=include_entities,
                 use_mock_nlp=False,
                 fallback_to_mock_on_error=False,
-                store_to_datastore=False,
+                store_to_datastore=True,
                 industry_sector="",
             )
 
@@ -123,16 +129,20 @@ class NewsSearchPage:
         request = payload.get("request", {})
 
         st.title("Search Analysis")
-        st.caption("Results are shown from the most recently loaded dataset.")
+        st.caption("Results are shown from the latest Firestore reload.")
 
         articles_found = int(summary.get("articles_found", 0))
-        loaded_articles = len(records)
-        total_articles = max(articles_found, loaded_articles)
+        existing_articles = int(summary.get("existing_articles", 0))
+        new_articles = int(summary.get("new_articles", 0))
+        analyzed_articles = int(summary.get("analyzed_articles", 0))
+        saved_articles = int(summary.get("saved_articles", 0))
+        loaded_articles = int(summary.get("loaded_articles", len(records)))
+        total_articles = max(articles_found, loaded_articles, 1)
         period_label = str(request.get("period", "")).strip() or "selected interval"
-        status_ratio = 0.0 if total_articles <= 0 else min(loaded_articles / total_articles, 1.0)
+        status_ratio = min(loaded_articles / total_articles, 1.0)
         st.progress(
             status_ratio,
-            text=f"Status: {loaded_articles}/{total_articles} articles loaded in the last {period_label}",
+            text=f"Status: {loaded_articles}/{total_articles} article(s) loaded from Firestore in the last {period_label}",
         )
 
         status_message = st.session_state.get("news_search_message", "Search completed.")
@@ -142,6 +152,15 @@ class NewsSearchPage:
             st.warning(f"Status: {status_message}")
 
         st.divider()
+        metric_cols = st.columns(6)
+        metric_cols[0].metric("Fetched", str(articles_found))
+        metric_cols[1].metric("Already in DB", str(existing_articles))
+        metric_cols[2].metric("New", str(new_articles))
+        metric_cols[3].metric("Analyzed", str(analyzed_articles))
+        metric_cols[4].metric("Saved", str(saved_articles))
+        metric_cols[5].metric("Loaded", str(loaded_articles))
+
+        st.info("Neue Artikel wurden automatisch in Firestore gespeichert und danach neu geladen.")
 
         if warnings:
             with st.expander(f"Warnings ({len(warnings)})"):
@@ -213,6 +232,35 @@ class NewsSearchPage:
                 )
 
         st.divider()
+        st.markdown("#### Sentiment Trend (Publication Time)")
+        trend_rows = self._build_trend_rows(records)
+        if trend_rows:
+            st.vega_lite_chart(
+                trend_rows,
+                {
+                    "mark": {"type": "line", "point": True},
+                    "encoding": {
+                        "x": {"field": "published_time", "type": "temporal", "title": "Zeit"},
+                        "y": {
+                            "field": "sentiment_score",
+                            "type": "quantitative",
+                            "title": "Sentiment",
+                            "scale": {"domain": [-1.0, 1.0]},
+                        },
+                        "tooltip": [
+                            {"field": "title", "type": "nominal", "title": "Title"},
+                            {"field": "source", "type": "nominal", "title": "Source"},
+                            {"field": "published_time", "type": "temporal", "title": "Published"},
+                            {"field": "sentiment_score", "type": "quantitative", "title": "Sentiment"},
+                        ],
+                    },
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("No trend data available (published date/time missing).")
+
+        st.divider()
         st.markdown("#### Top Extracted Entities")
         entity_counts = self._build_entity_counts(records)
         if entity_counts:
@@ -226,14 +274,7 @@ class NewsSearchPage:
         filtered_rows = self._render_table_filters_and_data(records)
         st.caption(f"Showing: {len(filtered_rows)} / {len(records)} rows")
 
-        col_store, col_clear = st.columns([2, 1])
-        with col_store:
-            if st.button("Store loaded data to datastore", type="primary", width="stretch"):
-                store_response = self.presenter.store_last_search_to_datastore()
-                if store_response.ok:
-                    st.success(store_response.message)
-                else:
-                    st.error(store_response.message)
+        col_clear = st.columns([1, 2])[0]
         with col_clear:
             if st.button("Clear results", width="stretch"):
                 st.session_state.pop(self._SEARCH_PAYLOAD_KEY, None)
@@ -335,30 +376,92 @@ class NewsSearchPage:
         }
 
     def _show_loading_screen(self, request: SearchRequest):
-        progress = st.progress(0.0, text="Loading analysis. This can take some time.")
+        progress = st.progress(0.0, text="Pipeline started...")
         status_line = st.empty()
+        stat_line = st.empty()
 
-        def _on_progress(processed: int, total: int) -> None:
-            safe_total = max(int(total), 1)
-            safe_processed = max(0, min(int(processed), safe_total))
-            ratio = safe_processed / safe_total
+        def _on_progress(update: PipelineProgress) -> None:
+            safe_total = max(int(update.total), 1)
+            safe_processed = max(0, min(int(update.processed), safe_total))
+            ratio = self._build_progress_ratio(update.phase, safe_processed, safe_total)
             progress.progress(
                 ratio,
-                text=f"Loading analysis. This can take some time. {safe_processed} out of {safe_total} loaded articles analyzed.",
+                text=update.message,
             )
-            status_line.caption(f"Status: {safe_processed}/{safe_total} analyzed")
+            status_line.caption(
+                f"Phase: {update.phase} | Step: {safe_processed}/{safe_total}"
+            )
+            stat_line.caption(
+                "Existing/New/Analyzed/Saved/Loaded: "
+                f"{update.existing_articles}/{update.new_articles}/"
+                f"{update.analyzed_articles}/{update.saved_articles}/{update.loaded_articles}"
+            )
 
         response = self.presenter.run_news_search(request, progress_callback=_on_progress)
 
         payload = response.payload if isinstance(response.payload, dict) else {}
+        summary = payload.get("summary", {})
         records = payload.get("records", [])
-        final_total = max(len(records), 1)
+        final_total = max(int(summary.get("articles_found", len(records))), 1)
         progress.progress(
             1.0,
             text=(
-                "Loading analysis. This can take some time. "
-                f"{len(records)} out of {final_total} loaded articles analyzed."
+                "Pipeline completed. "
+                f"{len(records)} out of {final_total} article(s) loaded from Firestore."
             ),
         )
-        status_line.caption("Status: analysis completed")
+        status_line.caption("Status: pipeline completed")
+        stat_line.caption(
+            "Fetched/Existing/New/Analyzed/Saved/Loaded: "
+            f"{int(summary.get('articles_found', 0))}/"
+            f"{int(summary.get('existing_articles', 0))}/"
+            f"{int(summary.get('new_articles', 0))}/"
+            f"{int(summary.get('analyzed_articles', 0))}/"
+            f"{int(summary.get('saved_articles', 0))}/"
+            f"{int(summary.get('loaded_articles', len(records)))}"
+        )
         return response
+
+    def _build_progress_ratio(self, phase: str, processed: int, total: int) -> float:
+        if phase == "done":
+            return 1.0
+
+        try:
+            phase_index = self._PROGRESS_PHASES.index(phase)
+        except ValueError:
+            phase_index = 0
+
+        phase_ratio = processed / max(total, 1)
+        return min(((phase_index + phase_ratio) / max(len(self._PROGRESS_PHASES), 1)), 0.99)
+
+    def _build_trend_rows(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in records:
+            published_value = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+            parsed_dt = self._parse_datetime(published_value)
+            if parsed_dt is None:
+                continue
+
+            rows.append(
+                {
+                    "published_time": parsed_dt.isoformat(),
+                    "sentiment_score": float(row.get("sentiment_score", 0.0)),
+                    "title": str(row.get("title", "")).strip(),
+                    "source": str(row.get("source", "")).strip(),
+                }
+            )
+
+        rows.sort(key=lambda item: item["published_time"])
+        return rows
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = date_parser.parse(value)
+        except Exception:  # noqa: BLE001
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed

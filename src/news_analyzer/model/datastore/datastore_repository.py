@@ -1,4 +1,4 @@
-"""Datastore persistence and query module for analyzed news records."""
+"""Firestore (Datastore-mode) persistence and query module for analyzed news records."""
 
 from __future__ import annotations
 
@@ -12,22 +12,26 @@ from typing import Any
 
 from dateutil import parser as date_parser
 from google.auth.exceptions import DefaultCredentialsError
-from google.cloud import datastore
-from google.cloud.datastore.query import PropertyFilter
+
+try:
+    from google.cloud import datastore
+except Exception:  # noqa: BLE001
+    datastore = None  # type: ignore[assignment]
 
 
 @dataclass
-class DatastoreConfig:
-    """Configuration for Datastore connection."""
+class FirestoreConfig:
+    """Configuration for Firestore Datastore-mode connection."""
 
     project_id: str = ""
-    kind: str = "AnalyzedArticle"
+    collection: str = ""
+    kind: str = "AnalyzedArticle"  # Backward-compat alias.
     credentials_path: str | None = None
     database_id: str | None = None
 
 
 @dataclass
-class DatastoreQuery:
+class FirestoreQuery:
     """Query filters for stored analyzed articles."""
 
     company_keyword: str | None = None
@@ -40,19 +44,30 @@ class DatastoreQuery:
     entity_type: str | None = None
     source_contains: str | None = None
     topic: str | None = None
+    urls: list[str] | None = None
     limit: int = 500
 
 
-class DatastoreRepository:
-    """Store and query analyzed article records in Google Datastore."""
+class FirestoreRepository:
+    """Store and query records in Firestore Datastore mode using Datastore client."""
 
-    def __init__(self, config: DatastoreConfig) -> None:
+    def __init__(self, config: FirestoreConfig) -> None:
         self.config = config
-        self.client: datastore.Client | None = None
+        self.client: Any | None = None
         self.init_error: str | None = None
         self.last_error: str | None = None
         self.database_id = (config.database_id or "").strip() or "(default)"
         self.credentials_path_resolved: str | None = None
+        self.collection_name = (
+            str(config.collection).strip() or str(config.kind).strip() or "AnalyzedArticle"
+        )
+
+        if datastore is None:
+            self.init_error = (
+                "google-cloud-datastore package is not installed. "
+                "Install it to enable Firestore Datastore-mode storage."
+            )
+            return
 
         credentials_path = self._resolve_credentials_path(config.credentials_path)
         self.credentials_path_resolved = credentials_path
@@ -61,10 +76,18 @@ class DatastoreRepository:
 
         try:
             database = None if self.database_id == "(default)" else self.database_id
-            if config.project_id:
-                self.client = datastore.Client(project=config.project_id, database=database)
+            project = str(config.project_id).strip() or None
+
+            if project:
+                try:
+                    self.client = datastore.Client(project=project, database=database)
+                except TypeError:
+                    self.client = datastore.Client(project=project)
             else:
-                self.client = datastore.Client(database=database)
+                try:
+                    self.client = datastore.Client(database=database)
+                except TypeError:
+                    self.client = datastore.Client()
         except DefaultCredentialsError as exc:
             self.init_error = f"Datastore credentials missing/invalid: {exc}"
         except Exception as exc:  # noqa: BLE001
@@ -75,9 +98,72 @@ class DatastoreRepository:
         """Return True if Datastore client is initialized."""
         return self.client is not None
 
+    def get_existing_urls(self, urls: list[str]) -> set[str]:
+        """Return the subset of URLs that already exist."""
+        if not self.is_available:
+            self.last_error = self.init_error or "Datastore client is not initialized."
+            return set()
+
+        clean_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not clean_urls:
+            self.last_error = None
+            return set()
+
+        keys = [self._build_key_from_url(url) for url in clean_urls]
+        id_to_url = {key.name: url for key, url in zip(keys, clean_urls, strict=False)}
+        try:
+            entities = self.client.get_multi(keys)
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"Datastore read failed: {exc}"
+            return set()
+
+        existing: set[str] = set()
+        for entity in entities:
+            if not entity:
+                continue
+            payload_url = str(entity.get("url", "")).strip()
+            if payload_url:
+                existing.add(payload_url)
+                continue
+            if entity.key and entity.key.name:
+                mapped = id_to_url.get(entity.key.name)
+                if mapped:
+                    existing.add(mapped)
+
+        self.last_error = None
+        return existing
+
+    def load_records_for_urls(self, urls: list[str]) -> list[dict[str, Any]]:
+        """Load stored records for a list of URLs, sorted by published datetime."""
+        if not self.is_available:
+            self.last_error = self.init_error or "Datastore client is not initialized."
+            return []
+
+        clean_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not clean_urls:
+            self.last_error = None
+            return []
+
+        keys = [self._build_key_from_url(url) for url in dict.fromkeys(clean_urls)]
+        try:
+            entities = self.client.get_multi(keys)
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"Datastore read failed: {exc}"
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for entity in entities:
+            if not entity:
+                continue
+            rows.append(self._normalize_row(dict(entity)))
+
+        self.last_error = None
+        rows.sort(key=self._sort_key, reverse=True)
+        return rows
+
     def save_record(self, record: dict[str, Any]) -> bool:
         """Upsert one analyzed article record."""
-        if self.client is None:
+        if not self.is_available:
             self.last_error = self.init_error or "Datastore client is not initialized."
             return False
 
@@ -86,16 +172,27 @@ class DatastoreRepository:
             self.last_error = "Record has no URL."
             return False
 
-        key_name = self._build_key_name(record)
-        key = self.client.key(self.config.kind, key_name)
+        key = self._build_key_from_url(url)
         entity = datastore.Entity(
             key=key,
-            exclude_from_indexes=("article_text", "description", "entities_json", "analysis_error", "extraction_error"),
+            exclude_from_indexes=(
+                "article_text",
+                "description",
+                "entities_json",
+                "raw_article_json",
+                "analysis_error",
+                "extraction_error",
+            ),
         )
 
         entities = self._normalize_entities(record.get("entities", []))
+        raw_article = record.get("raw_article", {})
+        if not isinstance(raw_article, dict):
+            raw_article = {}
+
         entity.update(
             {
+                "document_id": key.name or "",
                 "symbol": str(record.get("symbol", "")).strip().upper(),
                 "company_keyword": str(record.get("company_keyword", record.get("query", ""))).strip(),
                 "query": str(record.get("query", "")).strip(),
@@ -110,6 +207,7 @@ class DatastoreRepository:
                 "published_date": str(record.get("published_date", "")).strip(),
                 "published_at": str(record.get("published_at", "")).strip(),
                 "article_text": str(record.get("article_text", record.get("full_text", ""))).strip(),
+                "raw_article_json": json.dumps(raw_article, ensure_ascii=True, sort_keys=True),
                 "sentiment_score": float(record.get("sentiment_score", 0.0)),
                 "sentiment_magnitude": float(record.get("sentiment_magnitude", 0.0)),
                 "entities_json": json.dumps(entities, ensure_ascii=True),
@@ -137,32 +235,29 @@ class DatastoreRepository:
                 saved += 1
         return saved
 
-    def query_records(self, query_filter: DatastoreQuery | None = None, **kwargs: Any) -> list[dict[str, Any]]:
+    def query_records(self, query_filter: FirestoreQuery | None = None, **kwargs: Any) -> list[dict[str, Any]]:
         """Query stored records with filter support."""
-        if self.client is None:
+        if not self.is_available:
             self.last_error = self.init_error or "Datastore client is not initialized."
             return []
 
-        filters = query_filter or DatastoreQuery(**kwargs)
+        filters = query_filter or FirestoreQuery(**kwargs)
         fetch_limit = max(1, int(filters.limit))
 
-        query = self.client.query(kind=self.config.kind)
-        if filters.company_keyword:
-            keyword = filters.company_keyword.strip()
-            if keyword and keyword.upper() == keyword and len(keyword) <= 6 and " " not in keyword:
-                query.add_filter(filter=PropertyFilter("symbol", "=", keyword.upper()))
-
+        query = self.client.query(kind=self.collection_name)
         try:
-            rows = [dict(item) for item in query.fetch(limit=fetch_limit)]
+            rows = [self._normalize_row(dict(item)) for item in query.fetch(limit=fetch_limit * 5)]
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"Datastore query failed: {exc}"
             return []
 
-        self.last_error = None
-        normalized = [self._normalize_row(row) for row in rows]
-        filtered = [row for row in normalized if self._matches_filters(row, filters)]
+        filtered = [row for row in rows if self._matches_filters(row, filters)]
         filtered.sort(key=self._sort_key, reverse=True)
-        return filtered
+        self.last_error = None
+        return filtered[:fetch_limit]
+
+    def _build_key_from_url(self, url: str) -> Any:
+        return self.client.key(self.collection_name, self._build_document_id_from_url(url))
 
     @staticmethod
     def _resolve_credentials_path(raw_path: str | None) -> str | None:
@@ -200,10 +295,9 @@ class DatastoreRepository:
         return normalized
 
     @staticmethod
-    def _build_key_name(record: dict[str, Any]) -> str:
-        symbol = str(record.get("symbol", record.get("query", ""))).strip().upper()
-        url = str(record.get("url", "")).strip()
-        return hashlib.sha1(f"{symbol}|{url}".encode("utf-8")).hexdigest()
+    def _build_document_id_from_url(url: str) -> str:
+        clean_url = str(url).strip()
+        return hashlib.sha1(clean_url.encode("utf-8")).hexdigest()
 
     def _normalize_row(self, row: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(row)
@@ -215,9 +309,16 @@ class DatastoreRepository:
 
         if "article_text" not in normalized:
             normalized["article_text"] = normalized.get("full_text", "")
+        if "raw_article_json" not in normalized:
+            normalized["raw_article_json"] = "{}"
         return normalized
 
-    def _matches_filters(self, row: dict[str, Any], filters: DatastoreQuery) -> bool:
+    def _matches_filters(self, row: dict[str, Any], filters: FirestoreQuery) -> bool:
+        if filters.urls:
+            url_set = {str(url).strip() for url in filters.urls if str(url).strip()}
+            if url_set and str(row.get("url", "")).strip() not in url_set:
+                return False
+
         company_tokens = []
         if filters.company_keyword:
             company_tokens.append(filters.company_keyword.strip().lower())
@@ -317,3 +418,9 @@ class DatastoreRepository:
             or cls._parse_datetime(row.get("ingested_at"))
             or datetime.min.replace(tzinfo=timezone.utc)
         )
+
+
+# Backward-compatible aliases for existing imports.
+DatastoreConfig = FirestoreConfig
+DatastoreQuery = FirestoreQuery
+DatastoreRepository = FirestoreRepository
