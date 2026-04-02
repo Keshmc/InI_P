@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import csv
 from datetime import datetime, timezone
 import io
@@ -10,10 +9,9 @@ import json
 from typing import Any
 import zipfile
 
-from dateutil import parser as date_parser
 import streamlit as st
 
-from news_analyzer.model import PipelineProgress, SearchRequest
+from news_analyzer.model import PipelineProgress, SearchRequest, build_datastore_insights, entities_to_display, sentiment_label
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
 
@@ -126,6 +124,7 @@ class NewsSearchPage:
         warnings = payload.get("warnings", [])
         errors = payload.get("errors", [])
         request = payload.get("request", {})
+        insights = build_datastore_insights(records)
 
         st.title("Search Analysis")
         st.caption("Results are shown from the latest Firestore reload.")
@@ -183,13 +182,9 @@ class NewsSearchPage:
         with col_meter:
             render_sentiment_meter(avg_sentiment)
 
-        sentiment_distribution = self._build_sentiment_distribution(records)
+        sentiment_distribution = insights.sentiment.as_distribution_rows()
         st.markdown("#### Sentiment Distribution")
-        pie_values = [
-            {"label": "Positive", "count": int(sentiment_distribution.get("positive", 0))},
-            {"label": "Neutral", "count": int(sentiment_distribution.get("neutral", 0))},
-            {"label": "Negative", "count": int(sentiment_distribution.get("negative", 0))},
-        ]
+        pie_values = sentiment_distribution
         total_distribution = sum(item["count"] for item in pie_values)
         if total_distribution <= 0:
             st.info("No sentiment distribution available yet.")
@@ -232,7 +227,7 @@ class NewsSearchPage:
 
         st.divider()
         st.markdown("#### Sentiment Trend (Publication Time)")
-        trend_rows = self._build_trend_rows(records)
+        trend_rows = [item.as_dict() for item in insights.trend_points]
         if trend_rows:
             st.vega_lite_chart(
                 trend_rows,
@@ -261,9 +256,8 @@ class NewsSearchPage:
 
         st.divider()
         st.markdown("#### Top Extracted Entities")
-        entity_counts = self._build_entity_counts(records)
-        top_entity_rows = [{"entity": name, "count": count} for name, count in entity_counts[:15]]
-        if entity_counts:
+        top_entity_rows = [{"entity": item.label, "count": item.count} for item in insights.top_entities]
+        if top_entity_rows:
             chart_rows = [{"Entity": item["entity"], "Count": item["count"]} for item in top_entity_rows]
             st.bar_chart(chart_rows, x="Entity", y="Count", horizontal=True)
         else:
@@ -329,7 +323,7 @@ class NewsSearchPage:
                 continue
 
             if text_filter:
-                entity_text = self._entities_to_display(row.get("entities", []))
+                entity_text = entities_to_display(row.get("entities", []))
                 searchable = " ".join(
                     [
                         str(row.get("title", "")),
@@ -351,8 +345,8 @@ class NewsSearchPage:
                 "published_date": str(row.get("published_date", "")).strip(),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
-                "sentiment_label": self._sentiment_label(float(row.get("sentiment_score", 0.0))),
-                "entities": self._entities_to_display(row.get("entities", [])),
+                "sentiment_label": sentiment_label(float(row.get("sentiment_score", 0.0))),
+                "entities": entities_to_display(row.get("entities", [])),
                 "status": str(row.get("status", "")).strip(),
                 "url": str(row.get("url", "")).strip(),
             }
@@ -367,7 +361,7 @@ class NewsSearchPage:
         summary: dict[str, Any],
         records: list[dict[str, Any]],
         filtered_rows: list[dict[str, Any]],
-        sentiment_distribution: dict[str, int],
+        sentiment_distribution: list[dict[str, Any]],
         top_entities: list[dict[str, Any]],
         trend_rows: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]:
@@ -390,9 +384,8 @@ class NewsSearchPage:
         }
 
         sentiment_rows = [
-            {"label": "positive", "count": int(sentiment_distribution.get("positive", 0))},
-            {"label": "neutral", "count": int(sentiment_distribution.get("neutral", 0))},
-            {"label": "negative", "count": int(sentiment_distribution.get("negative", 0))},
+            {"label": str(item.get("label", "")).lower(), "count": int(item.get("count", 0))}
+            for item in sentiment_distribution
         ]
         extracted_filtered_rows = self._build_extracted_table_rows(filtered_rows)
         extracted_all_rows = self._build_extracted_table_rows(records)
@@ -490,8 +483,8 @@ class NewsSearchPage:
                 "published_date": str(row.get("published_date", "")).strip(),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
-                "sentiment_label": self._sentiment_label(float(row.get("sentiment_score", 0.0))),
-                "entities": self._entities_to_display(row.get("entities", [])),
+                "sentiment_label": sentiment_label(float(row.get("sentiment_score", 0.0))),
+                "entities": entities_to_display(row.get("entities", [])),
                 "status": str(row.get("status", "")).strip(),
                 "url": str(row.get("url", "")).strip(),
             }
@@ -502,7 +495,7 @@ class NewsSearchPage:
         export_row: dict[str, Any] = {}
         for key, value in row.items():
             export_row[str(key)] = self._to_export_cell(value)
-        export_row["entities_display"] = self._entities_to_display(row.get("entities", []))
+        export_row["entities_display"] = entities_to_display(row.get("entities", []))
         return export_row
 
     def _build_export_file_stem(self, request: dict[str, Any]) -> str:
@@ -519,57 +512,6 @@ class NewsSearchPage:
         if isinstance(value, (dict, list)):
             return json.dumps(value, ensure_ascii=True, sort_keys=True)
         return value
-
-    @staticmethod
-    def _entities_to_display(raw_entities: Any) -> str:
-        if not isinstance(raw_entities, list):
-            return ""
-        parts: list[str] = []
-        for item in raw_entities:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            entity_type = str(item.get("entity_type", "")).strip().upper()
-            if not name:
-                continue
-            if entity_type:
-                parts.append(f"{name} ({entity_type})")
-            else:
-                parts.append(name)
-        return ", ".join(parts)
-
-    @staticmethod
-    def _build_entity_counts(records: list[dict[str, Any]]) -> list[tuple[str, int]]:
-        counter: Counter[str] = Counter()
-        for row in records:
-            entities = row.get("entities", [])
-            if not isinstance(entities, list):
-                continue
-            for entity in entities:
-                if isinstance(entity, dict):
-                    name = str(entity.get("name", "")).strip()
-                    if name:
-                        counter[name] += 1
-        return counter.most_common()
-
-    @staticmethod
-    def _sentiment_label(score: float) -> str:
-        if score > 0.1:
-            return "positive"
-        if score < -0.1:
-            return "negative"
-        return "neutral"
-
-    def _build_sentiment_distribution(self, records: list[dict[str, Any]]) -> dict[str, int]:
-        counts: Counter[str] = Counter()
-        for row in records:
-            score = float(row.get("sentiment_score", 0.0))
-            counts[self._sentiment_label(score)] += 1
-        return {
-            "positive": int(counts.get("positive", 0)),
-            "neutral": int(counts.get("neutral", 0)),
-            "negative": int(counts.get("negative", 0)),
-        }
 
     def _show_loading_screen(self, request: SearchRequest):
         progress = st.progress(0.0, text="Pipeline started...")
@@ -629,35 +571,3 @@ class NewsSearchPage:
 
         phase_ratio = processed / max(total, 1)
         return min(((phase_index + phase_ratio) / max(len(self._PROGRESS_PHASES), 1)), 0.99)
-
-    def _build_trend_rows(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for row in records:
-            published_value = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
-            parsed_dt = self._parse_datetime(published_value)
-            if parsed_dt is None:
-                continue
-
-            rows.append(
-                {
-                    "published_time": parsed_dt.isoformat(),
-                    "sentiment_score": float(row.get("sentiment_score", 0.0)),
-                    "title": str(row.get("title", "")).strip(),
-                    "source": str(row.get("source", "")).strip(),
-                }
-            )
-
-        rows.sort(key=lambda item: item["published_time"])
-        return rows
-
-    @staticmethod
-    def _parse_datetime(value: str) -> datetime | None:
-        if not value:
-            return None
-        try:
-            parsed = date_parser.parse(value)
-        except Exception:  # noqa: BLE001
-            return None
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed

@@ -6,7 +6,8 @@ import streamlit as st
 
 from news_analyzer.model.trends import get_long_term_trend_scheduler, load_long_term_trend_config
 from news_analyzer.presenter import NewsPresenter
-from news_analyzer.view.pages.general.sidebar import NEWS_SEARCH_PAGE, render_sidebar
+from news_analyzer.view.pages.datastore.datastore_page import DataStorePage
+from news_analyzer.view.pages.general.sidebar import DATASTORE_PAGE, NEWS_SEARCH_PAGE, render_sidebar
 from news_analyzer.view.pages.search.search_page import NewsSearchPage
 
 
@@ -44,5 +45,9 @@ def run_view(presenter: NewsPresenter) -> None:
     current_status = trend_scheduler.status()
     if current_status.get("last_error"):
         st.warning(f"Long-term trend collector warning: {current_status['last_error']}")
+
+    if selected_page == DATASTORE_PAGE:
+        DataStorePage(presenter=presenter).render()
+        return
 
     NewsSearchPage(presenter=presenter).render()

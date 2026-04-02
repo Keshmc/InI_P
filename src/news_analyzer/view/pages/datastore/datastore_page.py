@@ -1,4 +1,4 @@
-"""Firestore data browser page."""
+"""Datastore dashboard page with aggregated analytics."""
 
 from __future__ import annotations
 
@@ -8,123 +8,212 @@ from typing import Any
 from dateutil import parser as date_parser
 import streamlit as st
 
-from news_analyzer.model import DatastoreQuery
+from news_analyzer.model import DatastoreInsights, DatastoreQuery, build_datastore_insights
 from news_analyzer.presenter import NewsPresenter
+from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
 
 
 class DataStorePage:
-    """Simple Firestore query and visualization page."""
+    """Datastore dashboard with topic/entity/sentiment analytics."""
 
-    _STATE_KEY = "firestore_page_payload"
+    _STATE_KEY = "datastore_dashboard_payload"
+    _MESSAGE_KEY = "datastore_dashboard_message"
+    _OK_KEY = "datastore_dashboard_ok"
+    _LIMIT = 5000
 
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
 
     def render(self) -> None:
-        st.title("Firestore")
-        st.caption("Load analyzed articles directly from Firestore and inspect sentiment trend.")
+        st.title("Datastore")
+        st.caption("Allgemeine Daten und Trends aus allen gespeicherten Artikeln.")
 
-        with st.form("firestore_query_form"):
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                keyword = st.text_input("Keyword contains", value="").strip()
-            with col_b:
-                topic = st.text_input("Topic (optional)", value="").strip().upper()
-            with col_c:
-                limit = int(st.number_input("Limit", min_value=1, max_value=1000, value=200, step=25))
-
-            submitted = st.form_submit_button("Load from Firestore", type="primary")
-
-        if submitted:
-            response = self.presenter.query_datastore(
-                DatastoreQuery(
-                    company_keyword=keyword or None,
-                    topic=topic or None,
-                    limit=limit,
-                )
+        refresh_col, info_col = st.columns([1, 3])
+        with refresh_col:
+            refresh_clicked = st.button("Reload Datastore", width="stretch")
+        with info_col:
+            st.caption(
+                f"Datastore wird automatisch geladen (bis zu {self._LIMIT} Artikel). "
+                "Mit Reload werden die neuesten Daten neu abgerufen."
             )
-            st.session_state[self._STATE_KEY] = response.payload
-            if response.ok:
-                st.success(response.message)
-            else:
-                st.error(response.message)
+
+        if refresh_clicked:
+            self._load_payload(force_reload=True)
+        else:
+            self._load_payload(force_reload=False)
 
         payload = st.session_state.get(self._STATE_KEY, {})
+        message = st.session_state.get(self._MESSAGE_KEY, "")
+        if message:
+            if st.session_state.get(self._OK_KEY, True):
+                st.success(message)
+            else:
+                st.error(message)
+
         records = payload.get("records", []) if isinstance(payload, dict) else []
         if not records:
-            st.info("No Firestore data loaded yet.")
+            st.info("Keine Datastore-Daten vorhanden oder geladen.")
             return
 
-        st.divider()
-        metric_col_a, metric_col_b, metric_col_c = st.columns(3)
-        metric_col_a.metric("Records", str(int(payload.get("count", len(records)))))
-        metric_col_b.metric("Avg Sentiment", f"{float(payload.get('avg_sentiment_score', 0.0)):+.3f}")
-        metric_col_c.metric("Avg Magnitude", f"{float(payload.get('avg_sentiment_magnitude', 0.0)):.3f}")
+        insights = build_datastore_insights(records)
+        self._render_facts(records=records, payload=payload, insights=insights)
+        self._render_sentiment_section(insights=insights)
+        self._render_topic_chart(insights=insights)
+        self._render_entity_chart(insights=insights)
+        self._render_publisher_chart(insights=insights)
+        self._render_article_table(insights=insights)
 
-        trend_rows = self._build_trend_rows(records)
-        st.markdown("#### Sentiment Trend")
-        if trend_rows:
-            st.vega_lite_chart(
-                trend_rows,
-                {
-                    "mark": {"type": "line", "point": True},
-                    "encoding": {
-                        "x": {"field": "published_time", "type": "temporal", "title": "Zeit"},
-                        "y": {
-                            "field": "sentiment_score",
-                            "type": "quantitative",
-                            "title": "Sentiment",
-                            "scale": {"domain": [-1.0, 1.0]},
+    def _load_payload(self, force_reload: bool) -> None:
+        if not force_reload and self._STATE_KEY in st.session_state:
+            return
+
+        response = self.presenter.query_datastore(DatastoreQuery(limit=self._LIMIT))
+        st.session_state[self._STATE_KEY] = response.payload
+        st.session_state[self._MESSAGE_KEY] = response.message
+        st.session_state[self._OK_KEY] = response.ok
+
+    def _render_facts(self, records: list[dict[str, Any]], payload: dict[str, Any], insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Stored Articles and Facts")
+
+        oldest, newest = self._resolve_date_range(records)
+        metrics = st.columns(6)
+        metrics[0].metric("Stored Articles", str(int(payload.get("count", len(records)))))
+        metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
+        metrics[2].metric("Unique Topics", str(int(insights.unique_topics)))
+        metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
+        metrics[4].metric("Oldest Article", oldest)
+        metrics[5].metric("Newest Article", newest)
+
+    def _render_sentiment_section(self, insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Allgemeines Sentiment und Stimmung")
+
+        col_stats, col_meter = st.columns([1.4, 3])
+        with col_stats:
+            st.metric("Average Score", f"{insights.sentiment.average_score:+.3f}")
+            st.metric("Average Magnitude", f"{insights.sentiment.average_magnitude:.3f}")
+        with col_meter:
+            render_sentiment_meter(insights.sentiment.average_score)
+
+        st.markdown("#### Positive / Neutral / Negative")
+        pie_values = insights.sentiment.as_distribution_rows()
+        st.vega_lite_chart(
+            pie_values,
+            {
+                "mark": {"type": "arc", "innerRadius": 20},
+                "encoding": {
+                    "theta": {"field": "count", "type": "quantitative"},
+                    "color": {
+                        "field": "label",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Positive", "Neutral", "Negative"],
+                            "range": ["#1e8449", "#f4d03f", "#c0392b"],
                         },
+                        "legend": {"title": "Label"},
+                    },
+                    "tooltip": [
+                        {"field": "label", "type": "nominal", "title": "Label"},
+                        {"field": "count", "type": "quantitative", "title": "Articles"},
+                    ],
+                },
+            },
+            use_container_width=True,
+        )
+
+    def _render_topic_chart(self, insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Top Topics (Rangliste)")
+        if not insights.top_topics:
+            st.info("Keine Topics vorhanden.")
+            return
+
+        rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_topics]
+        self._render_ranked_bar(rows=rows, label_field="Topic", value_field="Articles", color="#2471A3")
+
+    def _render_entity_chart(self, insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Top Entities (Rangliste)")
+        if not insights.top_entities:
+            st.info("Keine Entities vorhanden.")
+            return
+
+        rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_entities]
+        self._render_ranked_bar(rows=rows, label_field="Entity", value_field="Count", color="#0E6655")
+
+    def _render_publisher_chart(self, insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Most News by Publisher (Rangliste)")
+        if not insights.top_publishers:
+            st.info("Keine Publisher-Daten vorhanden.")
+            return
+
+        rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_publishers]
+        self._render_ranked_bar(rows=rows, label_field="Publisher", value_field="Articles", color="#935116")
+
+    def _render_article_table(self, insights: DatastoreInsights) -> None:
+        st.divider()
+        st.markdown("#### Stored Articles")
+        st.dataframe(insights.article_facts, width="stretch", hide_index=True)
+
+    def _render_ranked_bar(
+        self,
+        rows: list[dict[str, Any]],
+        label_field: str,
+        value_field: str,
+        color: str,
+    ) -> None:
+        sorted_rows = sorted(rows, key=lambda row: int(row.get("count", 0)), reverse=True)
+        ranked_rows = [
+            {
+                "Rank": index + 1,
+                label_field: str(item.get("label", "")).strip() or "Unknown",
+                value_field: int(item.get("count", 0)),
+            }
+            for index, item in enumerate(sorted_rows)
+        ]
+
+        chart_col, table_col = st.columns([2.8, 1.2])
+        with chart_col:
+            st.vega_lite_chart(
+                ranked_rows,
+                {
+                    "mark": {"type": "bar", "cornerRadiusEnd": 3},
+                    "encoding": {
+                        "y": {"field": label_field, "type": "nominal", "sort": "-x", "title": label_field},
+                        "x": {"field": value_field, "type": "quantitative", "title": value_field},
+                        "color": {"value": color},
                         "tooltip": [
-                            {"field": "title", "type": "nominal", "title": "Title"},
-                            {"field": "source", "type": "nominal", "title": "Source"},
-                            {"field": "published_time", "type": "temporal", "title": "Published"},
-                            {"field": "sentiment_score", "type": "quantitative", "title": "Sentiment"},
+                            {"field": "Rank", "type": "quantitative", "title": "Rank"},
+                            {"field": label_field, "type": "nominal", "title": label_field},
+                            {"field": value_field, "type": "quantitative", "title": value_field},
                         ],
                     },
                 },
                 use_container_width=True,
             )
-        else:
-            st.info("No records with parseable publication date were found.")
+        with table_col:
+            st.dataframe(ranked_rows, width="stretch", hide_index=True)
 
-        st.markdown("#### Records")
-        rows = [
-            {
-                "title": str(item.get("title", "")).strip(),
-                "source": str(item.get("source", "")).strip(),
-                "query": str(item.get("query", "")).strip(),
-                "published_date": str(item.get("published_date", "")).strip(),
-                "sentiment_score": round(float(item.get("sentiment_score", 0.0)), 4),
-                "sentiment_magnitude": round(float(item.get("sentiment_magnitude", 0.0)), 4),
-                "status": str(item.get("status", "")).strip(),
-                "url": str(item.get("url", "")).strip(),
-            }
-            for item in records
-        ]
-        st.dataframe(rows, width="stretch", hide_index=True)
-
-    def _build_trend_rows(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    def _resolve_date_range(self, records: list[dict[str, Any]]) -> tuple[str, str]:
+        parsed_dates: list[datetime] = []
         for row in records:
             raw_dt = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
             parsed = self._parse_datetime(raw_dt)
-            if parsed is None:
-                continue
-            rows.append(
-                {
-                    "published_time": parsed.isoformat(),
-                    "sentiment_score": float(row.get("sentiment_score", 0.0)),
-                    "title": str(row.get("title", "")).strip(),
-                    "source": str(row.get("source", "")).strip(),
-                }
-            )
-        rows.sort(key=lambda item: item["published_time"])
-        return rows
+            if parsed is not None:
+                parsed_dates.append(parsed)
+
+        if not parsed_dates:
+            return "-", "-"
+
+        parsed_dates.sort()
+        oldest = parsed_dates[0].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        newest = parsed_dates[-1].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        return oldest, newest
 
     @staticmethod
-    def _parse_datetime(value: str) -> datetime | None:
+    def _parse_datetime(value: str | None) -> datetime | None:
         if not value:
             return None
         try:

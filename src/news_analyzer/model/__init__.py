@@ -9,6 +9,16 @@ from .datastore import (
     FirestoreQuery,
     FirestoreRepository,
 )
+from .insights import (
+    CountMetric,
+    DatastoreInsights,
+    SentimentOverview,
+    TrendPoint,
+    build_datastore_insights,
+    build_sentiment_overview,
+    entities_to_display,
+    sentiment_label,
+)
 from .model import NewsAnalysisPipeline, PipelineProgress, SearchRequest, SearchResult, SearchSummary
 from .rss_feed import (
     ExtractedArticle,
@@ -26,6 +36,8 @@ __all__ = [
     "FirestoreConfig",
     "FirestoreQuery",
     "FirestoreRepository",
+    "CountMetric",
+    "DatastoreInsights",
     "EntityAnalyzer",
     "EntityItem",
     "EntityResult",
@@ -38,8 +50,14 @@ __all__ = [
     "SearchRequest",
     "SearchResult",
     "SearchSummary",
+    "SentimentOverview",
+    "TrendPoint",
     "SentimentAnalyzer",
     "SentimentResult",
+    "build_datastore_insights",
+    "build_sentiment_overview",
+    "entities_to_display",
+    "sentiment_label",
     "VALID_PERIODS",
     "VALID_TOPICS",
 ]
