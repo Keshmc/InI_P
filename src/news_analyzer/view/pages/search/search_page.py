@@ -12,7 +12,6 @@ from news_analyzer.view.pages.search.sentiment_score import render_sentiment_met
 from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads, to_export_cell
 
 PERIOD_OPTIONS = ["1h", "6h", "12h", "1d", "3d", "7d"]
-TREND_OPTIONS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "USA"]
 
 
 class NewsSearchPage:
@@ -38,23 +37,11 @@ class NewsSearchPage:
 
         with form_col:
             st.title("News Search")
-            st.caption("Search by keyword or choose a trending topic to analyze recent coverage.")
+            st.caption("Search by keyword to analyze recent coverage.")
             st.caption("New articles are analyzed and added to the saved article library automatically.")
+            st.caption("Hint: Use the Article Library → Long-Term Analysis tab to analyze trending topics.")
 
-            if st.session_state.get("search_mode") not in {"Keyword", "Trend"}:
-                st.session_state["search_mode"] = "Keyword"
-
-            mode = st.radio("Search Mode", options=["Keyword", "Trend"], horizontal=True, key="search_mode")
-
-            keyword = ""
-            trend = ""
-            if mode == "Keyword":
-                keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
-            else:
-                if st.session_state.get("search_trend") not in TREND_OPTIONS:
-                    st.session_state["search_trend"] = TREND_OPTIONS[0]
-                trend = st.selectbox("Trending Topic", options=TREND_OPTIONS, key="search_trend")
-                keyword = trend
+            keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
 
             period_default_index = PERIOD_OPTIONS.index("1d")
             period = st.selectbox(
@@ -64,8 +51,6 @@ class NewsSearchPage:
                 key="search_period",
             )
             st.caption("All matching articles in the selected interval will be processed.")
-            if mode == "Trend":
-                st.caption("Trend mode treats the selected topic as a keyword and keeps building a saved history.")
 
             with st.expander("Advanced Settings", expanded=False):
                 st.caption("Use these options if you want deeper analysis for each article.")
@@ -90,9 +75,9 @@ class NewsSearchPage:
                 return
 
             request = SearchRequest(
-                mode="trend" if mode == "Trend" else "keyword",
+                mode="keyword",
                 keyword=keyword.strip(),
-                topic=trend.strip().upper(),
+                topic="",
                 period=period,
                 max_results=300,
                 extract_full_text=extract_full_text,

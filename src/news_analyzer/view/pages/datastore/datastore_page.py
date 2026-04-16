@@ -9,6 +9,7 @@ from dateutil import parser as date_parser
 import streamlit as st
 
 from news_analyzer.model import DatastoreInsights, DatastoreQuery, build_datastore_insights
+from news_analyzer.model.trends import DEFAULT_LONG_TERM_TICKERS
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
 from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads
@@ -51,12 +52,12 @@ class DataStorePage:
         st.caption("Browse the saved article collection or search it with detailed filters.")
         st.caption("All timestamps are shown in Europe/Zurich.")
 
-        if st.session_state.get(self._MODE_KEY) not in {"Overview", "Search"}:
+        if st.session_state.get(self._MODE_KEY) not in {"Overview", "Search", "Long-Term Analysis"}:
             st.session_state[self._MODE_KEY] = "Overview"
 
         mode = st.radio(
             "View Mode",
-            options=["Overview", "Search"],
+            options=["Overview", "Search", "Long-Term Analysis"],
             horizontal=True,
             key=self._MODE_KEY,
         )
@@ -65,7 +66,11 @@ class DataStorePage:
             self._render_overview_mode()
             return
 
-        self._render_search_mode()
+        if mode == "Search":
+            self._render_search_mode()
+            return
+
+        self._render_long_term_analysis_mode()
 
     def _render_overview_mode(self) -> None:
         refresh_col, info_col = st.columns([1, 3])
@@ -595,6 +600,160 @@ class DataStorePage:
         from_date, _ = format_swiss_date_time(date_from)
         to_date, _ = format_swiss_date_time(date_to)
         return f"{from_date} to {to_date}"
+
+    def _render_long_term_analysis_mode(self) -> None:
+        """Render Long-Term Ticker analysis with dropdown selector and trend data."""
+        st.markdown("#### Long-Term Ticker Analysis")
+        st.caption("Select a long-term tracked ticker to view its saved articles, trends, and sentiment analysis.")
+
+        # Get available tickers from the long-term config
+        available_tickers = [str(t).strip() for t in DEFAULT_LONG_TERM_TICKERS if str(t).strip()]
+        if not available_tickers:
+            st.warning("No long-term tickers are configured.")
+            return
+
+        # Ticker selection dropdown
+        col_ticker, col_refresh = st.columns([3, 1])
+        with col_ticker:
+            if st.session_state.get("long_term_selected_ticker") not in available_tickers:
+                st.session_state["long_term_selected_ticker"] = available_tickers[0]
+
+            selected_ticker = st.selectbox(
+                "Select Ticker",
+                options=available_tickers,
+                index=available_tickers.index(st.session_state.get("long_term_selected_ticker", available_tickers[0])),
+                key="long_term_selected_ticker",
+            )
+
+        with col_refresh:
+            refresh_clicked = st.button("Refresh data", width="stretch")
+
+        # Load data for selected ticker
+        self._load_long_term_payload(ticker=selected_ticker, force_reload=refresh_clicked)
+
+        # Render messages
+        message_key = "long_term_analysis_message"
+        ok_key = "long_term_analysis_ok"
+        self._render_message(
+            message=str(st.session_state.get(message_key, "")),
+            ok=bool(st.session_state.get(ok_key, True)),
+        )
+
+        # Get payload and render
+        payload_key = "long_term_analysis_payload"
+        payload = st.session_state.get(payload_key, {})
+
+        if not isinstance(payload, dict) or not payload:
+            st.info(f"No saved articles found for ticker '{selected_ticker}' yet.")
+            return
+
+        records = payload.get("records", [])
+        if not records:
+            st.info(f"No articles match the ticker '{selected_ticker}'.")
+            return
+
+        # Build insights from filtered records
+        insights = build_datastore_insights(records)
+
+        # Render analysis sections
+        st.divider()
+        self._render_long_term_facts(records=records, ticker=selected_ticker, insights=insights)
+        self._render_sentiment_section(insights=insights)
+        self._render_trend_chart(insights=insights)
+        self._render_entity_chart(insights=insights)
+        self._render_publisher_chart(insights=insights)
+        self._render_article_table(insights=insights, title=f"Articles matching '{selected_ticker}'")
+
+        # Export section
+        st.divider()
+        st.markdown("#### Export")
+        render_export_downloads(
+            sections=self._build_long_term_export_sections(ticker=selected_ticker, records=records, insights=insights),
+            file_stem=build_export_file_stem(prefix="article_library_long_term", parts=[selected_ticker]),
+            key_prefix="article_library_long_term_export",
+            caption=f"Export the '{selected_ticker}' analysis as CSV, JSON, or Excel.",
+        )
+
+    def _load_long_term_payload(self, ticker: str, force_reload: bool) -> None:
+        """Load articles matching the selected long-term ticker."""
+        payload_key = "long_term_analysis_payload"
+        state_ticker_key = "long_term_analysis_ticker"
+
+        if (
+            not force_reload
+            and payload_key in st.session_state
+            and st.session_state.get(state_ticker_key) == ticker
+        ):
+            return
+
+        # Query datastore for articles matching the ticker
+        query = DatastoreQuery(
+            company_keyword=ticker,
+            limit=self._LIMIT,
+        )
+
+        response = self.presenter.query_datastore(query)
+        payload = response.payload if isinstance(response.payload, dict) else {}
+
+        st.session_state[payload_key] = payload
+        st.session_state[state_ticker_key] = ticker
+        st.session_state["long_term_analysis_message"] = response.message
+        st.session_state["long_term_analysis_ok"] = response.ok
+
+    def _render_long_term_facts(
+        self,
+        records: list[dict[str, Any]],
+        ticker: str,
+        insights: DatastoreInsights,
+    ) -> None:
+        """Render overview metrics for the selected long-term ticker."""
+        st.markdown("#### Overview")
+
+        oldest, newest = self._resolve_date_range(records)
+        metrics = st.columns(5)
+        metrics[0].metric("Matching Articles", str(len(records)))
+        metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
+        metrics[2].metric("Unique Trends", str(int(insights.unique_trends)))
+        metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
+        metrics[4].metric("Avg Sentiment", f"{insights.sentiment.average_score:+.3f}")
+
+        time_col_a, time_col_b = st.columns(2)
+        with time_col_a:
+            st.markdown("**Oldest Article (Zurich)**")
+            st.caption(oldest)
+        with time_col_b:
+            st.markdown("**Newest Article (Zurich)**")
+            st.caption(newest)
+
+    def _build_long_term_export_sections(
+        self,
+        ticker: str,
+        records: list[dict[str, Any]],
+        insights: DatastoreInsights,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Build export sections for long-term ticker analysis."""
+        oldest, newest = self._resolve_date_range(records)
+        summary_rows = [
+            {
+                "ticker": ticker,
+                "matching_articles": len(records),
+                "unique_publishers": int(insights.unique_publishers),
+                "unique_trends": int(insights.unique_trends),
+                "unique_entities": int(insights.unique_entities),
+                "avg_sentiment_score": float(insights.sentiment.average_score),
+                "avg_sentiment_magnitude": float(insights.sentiment.average_magnitude),
+                "oldest_article_zurich": oldest,
+                "newest_article_zurich": newest,
+            }
+        ]
+        return {
+            "ticker_summary": summary_rows,
+            "sentiment_distribution": insights.sentiment.as_distribution_rows(),
+            "top_trends": [item.as_dict() for item in insights.top_trends],
+            "top_entities": [item.as_dict() for item in insights.top_entities],
+            "top_publishers": [item.as_dict() for item in insights.top_publishers],
+            "matching_articles": self._build_article_table_rows(insights),
+        }
 
     @staticmethod
     def _render_message(message: str, ok: bool) -> None:
