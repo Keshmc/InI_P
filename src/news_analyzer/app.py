@@ -138,3 +138,5 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
+
+# streamlit run src/news_analyzer/app.py
