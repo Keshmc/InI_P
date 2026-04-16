@@ -7,7 +7,14 @@ import streamlit as st
 from news_analyzer.model.trends import get_long_term_trend_scheduler, load_long_term_trend_config
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.datastore.datastore_page import DataStorePage
-from news_analyzer.view.pages.general.sidebar import DATASTORE_PAGE, NEWS_SEARCH_PAGE, PUBLISHER_PAGE, render_sidebar
+from news_analyzer.view.pages.general.sidebar import (
+    DATASTORE_PAGE,
+    LONG_TERM_PAGE,
+    NEWS_SEARCH_PAGE,
+    PUBLISHER_PAGE,
+    render_sidebar,
+)
+from news_analyzer.view.pages.long_term.long_term_page import LongTermPage
 from news_analyzer.view.pages.publishers.publisher_page import PublisherPage
 from news_analyzer.view.pages.search.search_page import NewsSearchPage
 
@@ -53,6 +60,14 @@ def run_view(presenter: NewsPresenter) -> None:
 
     if selected_page == PUBLISHER_PAGE:
         PublisherPage(presenter=presenter).render()
+        return
+
+    if selected_page == LONG_TERM_PAGE:
+        LongTermPage(
+            presenter=presenter,
+            trend_config=trend_config,
+            trend_status=current_status,
+        ).render()
         return
 
     NewsSearchPage(presenter=presenter).render()

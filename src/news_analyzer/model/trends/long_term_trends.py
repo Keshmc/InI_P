@@ -26,7 +26,7 @@ class LongTermTrendConfig:
     interval_minutes: int = 360
     run_on_startup: bool = True
     period: str = "1d"
-    max_results: int = 100
+    max_results: int = 300
     extract_full_text: bool = True
     include_entities: bool = True
     tickers: list[str] = field(default_factory=lambda: list(DEFAULT_LONG_TERM_TICKERS))
@@ -46,7 +46,7 @@ class LongTermTrendConfig:
             interval_minutes=max(1, int(payload.get("interval_minutes", 360))),
             run_on_startup=bool(payload.get("run_on_startup", True)),
             period=str(payload.get("period", "1d")).strip().lower() or "1d",
-            max_results=max(1, int(payload.get("max_results", 100))),
+            max_results=max(1, int(payload.get("max_results", 300))),
             extract_full_text=bool(payload.get("extract_full_text", True)),
             include_entities=bool(payload.get("include_entities", True)),
             tickers=tickers,

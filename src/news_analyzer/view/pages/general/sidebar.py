@@ -9,10 +9,12 @@ from news_analyzer.view.utils import format_swiss_timestamp
 NEWS_SEARCH_PAGE = "news_search"
 DATASTORE_PAGE = "datastore"
 PUBLISHER_PAGE = "publisher_sentiment"
+LONG_TERM_PAGE = "long_term_trends"
 _NAV_OPTIONS = [
     ("News Search", NEWS_SEARCH_PAGE, "home"),
     ("Article Library", DATASTORE_PAGE, "grid"),
     ("Publisher Sentiment", PUBLISHER_PAGE, "search"),
+    ("Long-Term Trends", LONG_TERM_PAGE, "chart"),
 ]
 
 
@@ -150,6 +152,14 @@ def _render_icon(icon_name: str) -> str:
             '<svg viewBox="0 0 24 24" aria-hidden="true">'
             '<circle cx="11" cy="11" r="6.5"></circle>'
             '<path d="m16 16 4 4"></path>'
+            "</svg>"
+        ),
+        "chart": (
+            '<svg viewBox="0 0 24 24" aria-hidden="true">'
+            '<path d="M4 19h16"></path>'
+            '<path d="M7 16V10"></path>'
+            '<path d="M12 16V6"></path>'
+            '<path d="M17 16v-3"></path>'
             "</svg>"
         ),
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import warnings
 
 from gnews import GNews
 
@@ -73,7 +74,9 @@ class RssFeedLoader:
         seen_urls: set[str] = set()
         for query in query_candidates:
             try:
-                raw_items = gnews.get_news(query)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=UserWarning)
+                    raw_items = gnews.get_news(query)
             except Exception as exc:  # noqa: BLE001
                 self.last_error = f"Keyword search failed for '{query}': {exc}"
                 LOGGER.warning("Keyword search failed for query '%s': %s", query, exc)
@@ -107,7 +110,9 @@ class RssFeedLoader:
 
         gnews = self._build_client(period=period, max_results=max_results)
         try:
-            raw_items = gnews.get_news_by_topic(clean_topic)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                raw_items = gnews.get_news_by_topic(clean_topic)
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"Topic search failed for '{clean_topic}': {exc}"
             LOGGER.warning("Topic search failed for topic '%s': %s", clean_topic, exc)

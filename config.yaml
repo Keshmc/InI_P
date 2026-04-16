@@ -46,7 +46,7 @@ long_term_trends:
   interval_minutes: 360
   run_on_startup: true
   period: 1d
-  max_results: 100
+  max_results: 300
   extract_full_text: true
   include_entities: true
   tickers:
