@@ -11,7 +11,7 @@ import streamlit as st
 from news_analyzer.model import DatastoreInsights, DatastoreQuery, build_datastore_insights
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import format_swiss_date_time
+from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads
 
 
 class DataStorePage:
@@ -41,7 +41,8 @@ class DataStorePage:
     _SEARCH_MESSAGE_KEY = "article_library_search_message"
     _SEARCH_OK_KEY = "article_library_search_ok"
 
-    _LIMIT = 5000
+    _LIMIT = 10000
+
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
 
@@ -99,6 +100,14 @@ class DataStorePage:
         self._render_entity_chart(insights=insights)
         self._render_publisher_chart(insights=insights)
         self._render_article_table(insights=insights, title="Stored Articles")
+        st.divider()
+        st.markdown("#### Export")
+        render_export_downloads(
+            sections=self._build_overview_export_sections(records=records, payload=payload, insights=insights),
+            file_stem=build_export_file_stem(prefix="article_library_overview"),
+            key_prefix="article_library_overview_export",
+            caption="Export the full library overview as CSV, JSON, or Excel.",
+        )
 
     def _render_search_mode(self) -> None:
         st.markdown("#### Saved Article Search")
@@ -155,8 +164,8 @@ class DataStorePage:
             with filter_col_c:
                 result_limit = st.selectbox(
                     "Result limit",
-                    options=[50, 100, 250, 500, 1000],
-                    index=3,
+                    options=[50, 100, 250, 500, 1000, 2500, 5000, 10000],
+                    index=4,
                     key="article_library_result_limit",
                     help="Higher limits can take longer to load.",
                 )
@@ -208,6 +217,20 @@ class DataStorePage:
         self._render_publisher_chart(insights=insights)
         self._render_trend_chart(insights=insights)
         self._render_article_table(insights=insights, title="Matching Articles")
+        st.divider()
+        st.markdown("#### Export")
+        render_export_downloads(
+            sections=self._build_search_export_sections(payload=payload, insights=insights),
+            file_stem=build_export_file_stem(
+                prefix="article_library_search",
+                parts=[
+                    ", ".join(self._parse_company_tokens(st.session_state.get("article_library_search_companies", ""))),
+                    str(st.session_state.get("article_library_search_sector", "")).strip(),
+                ],
+            ),
+            key_prefix="article_library_search_export",
+            caption="Export the current filtered results as CSV, JSON, or Excel.",
+        )
 
     def _load_overview_payload(self, force_reload: bool) -> None:
         if not force_reload and self._OVERVIEW_STATE_KEY in st.session_state:
@@ -340,7 +363,7 @@ class DataStorePage:
                     ],
                 },
             },
-            use_container_width=True,
+            width="stretch",
         )
 
     def _render_trend_chart(self, insights: DatastoreInsights) -> None:
@@ -377,17 +400,7 @@ class DataStorePage:
         st.divider()
         st.markdown(f"#### {title}")
         st.caption("Use the table to review article headlines, publishers, trends, and sentiment scores.")
-        display_rows: list[dict[str, Any]] = []
-        for row in insights.article_facts:
-            raw_dt = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
-            date_value, time_value = format_swiss_date_time(raw_dt)
-            normalized = dict(row)
-            normalized["date"] = date_value
-            normalized["time"] = time_value
-            normalized.pop("published_date", None)
-            normalized.pop("published_at", None)
-            display_rows.append(normalized)
-        st.dataframe(display_rows, width="stretch", hide_index=True)
+        st.dataframe(self._build_article_table_rows(insights), width="stretch", hide_index=True)
 
     def _render_ranked_bar(
         self,
@@ -423,7 +436,7 @@ class DataStorePage:
                         ],
                     },
                 },
-                use_container_width=True,
+                width="stretch",
             )
         with table_col:
             st.dataframe(ranked_rows, width="stretch", hide_index=True)
@@ -449,6 +462,74 @@ class DataStorePage:
                 "Result Limit": str(int(result_limit)),
             }
         ]
+        return rows
+
+    def _build_overview_export_sections(
+        self,
+        records: list[dict[str, Any]],
+        payload: dict[str, Any],
+        insights: DatastoreInsights,
+    ) -> dict[str, list[dict[str, Any]]]:
+        oldest, newest = self._resolve_date_range(records)
+        summary_rows = [
+            {
+                "stored_articles": int(payload.get("count", len(records))),
+                "unique_publishers": int(insights.unique_publishers),
+                "unique_trends": int(insights.unique_trends),
+                "unique_entities": int(insights.unique_entities),
+                "avg_sentiment_score": float(insights.sentiment.average_score),
+                "avg_sentiment_magnitude": float(insights.sentiment.average_magnitude),
+                "oldest_article_zurich": oldest,
+                "newest_article_zurich": newest,
+            }
+        ]
+        return {
+            "overview_summary": summary_rows,
+            "sentiment_distribution": insights.sentiment.as_distribution_rows(),
+            "top_trends": [item.as_dict() for item in insights.top_trends],
+            "top_entities": [item.as_dict() for item in insights.top_entities],
+            "top_publishers": [item.as_dict() for item in insights.top_publishers],
+            "stored_articles": self._build_article_table_rows(insights),
+        }
+
+    def _build_search_export_sections(
+        self,
+        payload: dict[str, Any],
+        insights: DatastoreInsights,
+    ) -> dict[str, list[dict[str, Any]]]:
+        records = payload.get("records", []) if isinstance(payload, dict) else []
+        oldest, newest = self._resolve_date_range(records if isinstance(records, list) else [])
+        summary_rows = [
+            {
+                "matching_articles": int(payload.get("count", len(records) if isinstance(records, list) else 0)),
+                "avg_sentiment_score": float(payload.get("avg_sentiment_score", 0.0)),
+                "avg_sentiment_magnitude": float(payload.get("avg_sentiment_magnitude", 0.0)),
+                "unique_publishers": int(insights.unique_publishers),
+                "unique_trends": int(insights.unique_trends),
+                "oldest_match_zurich": oldest,
+                "newest_match_zurich": newest,
+            }
+        ]
+        return {
+            "active_filters": payload.get("filters_summary", []),
+            "search_summary": summary_rows,
+            "sentiment_distribution": insights.sentiment.as_distribution_rows(),
+            "top_publishers": [item.as_dict() for item in insights.top_publishers],
+            "top_trends": [item.as_dict() for item in insights.top_trends],
+            "matching_articles": self._build_article_table_rows(insights),
+        }
+
+    def _build_article_table_rows(self, insights: DatastoreInsights) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for row in insights.article_facts:
+            raw_dt = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+            date_value, time_value = format_swiss_date_time(raw_dt)
+            normalized = dict(row)
+            normalized["date"] = date_value
+            normalized["time"] = time_value
+            normalized.pop("published_date", None)
+            normalized.pop("published_at", None)
+            rows.append(normalized)
         return rows
 
     @staticmethod

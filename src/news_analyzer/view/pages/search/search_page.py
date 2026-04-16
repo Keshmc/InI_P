@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import csv
-from datetime import datetime, timezone
-import io
-import json
 from typing import Any
-import zipfile
 
 import streamlit as st
 
 from news_analyzer.model import PipelineProgress, SearchRequest, build_datastore_insights, entities_to_display, sentiment_label
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import format_swiss_date_time
+from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads, to_export_cell
 
 PERIOD_OPTIONS = ["1h", "6h", "12h", "1d", "3d", "7d"]
 TREND_OPTIONS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "USA"]
@@ -99,7 +94,7 @@ class NewsSearchPage:
                 keyword=keyword.strip(),
                 topic=trend.strip().upper(),
                 period=period,
-                max_results=1000,
+                max_results=300,
                 extract_full_text=extract_full_text,
                 include_entities=include_entities,
                 use_mock_nlp=False,
@@ -216,7 +211,7 @@ class NewsSearchPage:
                             ],
                         },
                     },
-                    use_container_width=True,
+                    width="stretch",
                 )
             with table_col:
                 st.dataframe(
@@ -265,7 +260,7 @@ class NewsSearchPage:
                         ],
                     },
                 },
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("No trend data available (published date/time missing).")
@@ -295,9 +290,14 @@ class NewsSearchPage:
             top_entities=top_entity_rows,
             trend_rows=trend_rows,
         )
-        self._render_export_actions(
+        render_export_downloads(
             sections=export_sections,
-            file_stem=self._build_export_file_stem(request=request),
+            file_stem=build_export_file_stem(
+                prefix="news_search",
+                parts=[str(request.get("keyword", "")).strip() or str(request.get("topic", "")).strip()],
+            ),
+            key_prefix="news_search_export",
+            caption="Export the current search results as CSV, JSON, or Excel.",
         )
 
         col_clear = st.columns([1, 2])[0]
@@ -423,80 +423,6 @@ class NewsSearchPage:
             "articles_full": article_rows,
         }
 
-    def _render_export_actions(self, sections: dict[str, list[dict[str, Any]]], file_stem: str) -> None:
-        csv_zip_bytes = self._build_csv_zip_bytes(sections)
-        json_bytes = json.dumps(sections, ensure_ascii=True, indent=2).encode("utf-8")
-        excel_bytes, excel_error = self._build_excel_bytes(sections)
-
-        col_csv, col_json, col_excel = st.columns(3)
-        with col_csv:
-            st.download_button(
-                "CSV Export (ZIP)",
-                data=csv_zip_bytes,
-                file_name=f"{file_stem}_tables.zip",
-                mime="application/zip",
-            )
-        with col_json:
-            st.download_button(
-                "JSON Export",
-                data=json_bytes,
-                file_name=f"{file_stem}_tables.json",
-                mime="application/json",
-            )
-        with col_excel:
-            st.download_button(
-                "Excel Export",
-                data=excel_bytes or b"",
-                file_name=f"{file_stem}_tables.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                disabled=excel_bytes is None,
-            )
-        if excel_error:
-            st.caption(excel_error)
-
-    def _build_csv_zip_bytes(self, sections: dict[str, list[dict[str, Any]]]) -> bytes:
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, rows in sections.items():
-                csv_text = self._rows_to_csv_text(rows)
-                archive.writestr(f"{name}.csv", csv_text)
-        return buffer.getvalue()
-
-    def _rows_to_csv_text(self, rows: list[dict[str, Any]]) -> str:
-        if not rows:
-            return ""
-
-        fieldnames: list[str] = list(rows[0].keys())
-        for row in rows[1:]:
-            for key in row.keys():
-                if key not in fieldnames:
-                    fieldnames.append(key)
-
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: self._to_export_cell(row.get(key)) for key in fieldnames})
-        return output.getvalue()
-
-    def _build_excel_bytes(self, sections: dict[str, list[dict[str, Any]]]) -> tuple[bytes | None, str | None]:
-        try:
-            import pandas as pd  # type: ignore[import-not-found]
-        except ImportError:
-            return None, "Excel export disabled: install pandas + openpyxl."
-
-        buffer = io.BytesIO()
-        try:
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                for name, rows in sections.items():
-                    dataframe = pd.DataFrame(rows)
-                    if dataframe.empty:
-                        dataframe = pd.DataFrame([{}])
-                    dataframe.to_excel(writer, sheet_name=name[:31], index=False)
-        except Exception as exc:  # noqa: BLE001
-            return None, f"Excel export failed: {exc}"
-        return buffer.getvalue(), None
-
     def _build_extracted_table_rows(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             {
@@ -522,7 +448,7 @@ class NewsSearchPage:
     def _build_article_export_row(self, row: dict[str, Any]) -> dict[str, Any]:
         export_row: dict[str, Any] = {}
         for key, value in row.items():
-            export_row[str(key)] = self._to_export_cell(value)
+            export_row[str(key)] = to_export_cell(value)
         export_row["entities_display"] = entities_to_display(row.get("entities", []))
         export_row["trend"] = self._trend_from_record(row)
         date_value, time_value = format_swiss_date_time(
@@ -532,26 +458,12 @@ class NewsSearchPage:
         export_row["time"] = time_value
         return export_row
 
-    def _build_export_file_stem(self, request: dict[str, Any]) -> str:
-        query = str(request.get("keyword", "")).strip() or str(request.get("topic", "")).strip()
-        clean_query = "".join(ch if ch.isalnum() else "_" for ch in query)[:40].strip("_")
-        if not clean_query:
-            clean_query = "query"
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        return f"news_analysis_{clean_query}_{timestamp}"
-
     @staticmethod
     def _trend_from_record(row: dict[str, Any]) -> str:
         query = str(row.get("query", "")).strip()
         if query:
             return query
         return str(row.get("topic", "")).strip()
-
-    @staticmethod
-    def _to_export_cell(value: Any) -> Any:
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=True, sort_keys=True)
-        return value
 
     def _show_loading_screen(self, request: SearchRequest):
         progress_placeholder = st.empty()

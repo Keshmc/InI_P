@@ -8,7 +8,7 @@ import streamlit as st
 
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import format_swiss_date_time
+from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads
 
 
 class PublisherPage:
@@ -107,7 +107,7 @@ class PublisherPage:
                         ],
                     },
                 },
-                use_container_width=True,
+                width="stretch",
             )
         with table_col:
             st.dataframe(
@@ -147,7 +147,7 @@ class PublisherPage:
                         ],
                     },
                 },
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("No publisher ranking is available yet.")
@@ -173,7 +173,30 @@ class PublisherPage:
 
         st.divider()
         st.markdown("#### All Publishers")
-        st.dataframe(self._build_match_rows(matches), width="stretch", hide_index=True)
+        all_rows = self._build_match_rows(matches)
+        st.dataframe(all_rows, width="stretch", hide_index=True)
+
+        st.divider()
+        st.markdown("#### Export")
+        render_export_downloads(
+            sections=self._build_export_sections(
+                matches=matches,
+                record_count=record_count,
+                total_publishers=total_publishers,
+                positive_count=positive_count,
+                neutral_count=neutral_count,
+                negative_count=negative_count,
+                average_score=average_score,
+                most_active=most_active,
+                all_rows=all_rows,
+                positive_rows=positive_rows,
+                negative_rows=negative_rows,
+                distribution_rows=distribution_rows,
+            ),
+            file_stem=build_export_file_stem(prefix="publisher_sentiment_summary"),
+            key_prefix="publisher_sentiment_export",
+            caption="Export the current publisher sentiment summary as CSV, JSON, or Excel.",
+        )
 
     def _load_summary_payload(self) -> None:
         response = self.presenter.search_publishers(
@@ -238,6 +261,42 @@ class PublisherPage:
                 }
             )
         return rows
+
+    def _build_export_sections(
+        self,
+        matches: list[dict[str, Any]],
+        record_count: int,
+        total_publishers: int,
+        positive_count: int,
+        neutral_count: int,
+        negative_count: int,
+        average_score: float,
+        most_active: str,
+        all_rows: list[dict[str, Any]],
+        positive_rows: list[dict[str, Any]],
+        negative_rows: list[dict[str, Any]],
+        distribution_rows: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Build compact export tables for the publisher summary page."""
+        return {
+            "summary": [
+                {
+                    "stored_articles": int(record_count),
+                    "publishers": int(total_publishers),
+                    "positive_publishers": int(positive_count),
+                    "neutral_publishers": int(neutral_count),
+                    "negative_publishers": int(negative_count),
+                    "average_publisher_score": float(average_score),
+                    "most_active_publisher": most_active,
+                }
+            ],
+            "sentiment_distribution": distribution_rows,
+            "most_active_publishers": all_rows[:15],
+            "most_positive_publishers": positive_rows,
+            "most_negative_publishers": negative_rows,
+            "all_publishers": all_rows,
+            "raw_matches": [item for item in matches if isinstance(item, dict)],
+        }
 
     @staticmethod
     def _format_datetime_label(raw_value: str) -> str:

@@ -15,7 +15,7 @@ from news_analyzer.model.model import NewsAnalysisPipeline, SearchRequest
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_LONG_TERM_TICKERS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "USA"]
+DEFAULT_LONG_TERM_TICKERS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "Tesla", "MSFT", "Apple", "USA"]
 
 
 @dataclass
@@ -148,8 +148,10 @@ class LongTermTrendScheduler:
         if self.config.run_on_startup and not self._stop_event.is_set():
             self._run_once()
 
-        wait_seconds = max(60, int(self.config.interval_minutes) * 60)
-        while not self._stop_event.wait(wait_seconds):
+        while True:
+            wait_seconds = max(60, int(self.config.interval_minutes) * 60)
+            if self._stop_event.wait(wait_seconds):
+                break
             self._run_once()
 
     def _run_once(self) -> None:
@@ -233,4 +235,6 @@ def get_long_term_trend_scheduler(
     with _GLOBAL_LOCK:
         if _GLOBAL_SCHEDULER is None:
             _GLOBAL_SCHEDULER = LongTermTrendScheduler(pipeline=pipeline, config=config)
+        else:
+            _GLOBAL_SCHEDULER.config = config
         return _GLOBAL_SCHEDULER

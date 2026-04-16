@@ -343,7 +343,7 @@ class FirestoreRepository:
 
         filters = query_filter or FirestoreQuery(**kwargs)
         fetch_limit = max(1, int(filters.limit))
-        scan_limit = max(fetch_limit, 5000)
+        scan_limit = max(fetch_limit, 10000)
 
         query = self.client.query(kind=self.collection_name)
         try:
