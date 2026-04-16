@@ -115,7 +115,7 @@ def build_presenter(config_path: Path | None = None) -> NewsPresenter:
 
     datastore_repo = DatastoreRepository(
         DatastoreConfig(
-            project_id=str(datastore_payload.get("project_id", 
+            project_id=str(datastore_payload.get("project_id")), 
             kind=str(datastore_payload.get("kind", datastore_payload.get("datastore_kind", "AnalyzedArticle"))),
             credentials_path=credentials_path,
             database_id=str(datastore_payload.get("database_id", "")).strip() or None,
