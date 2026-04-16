@@ -45,7 +45,7 @@ def run_view(presenter: NewsPresenter) -> None:
 
     current_status = trend_scheduler.status()
     if current_status.get("last_error"):
-        st.warning(f"Long-term trend collector warning: {current_status['last_error']}")
+        st.warning(f"Background collector issue: {current_status['last_error']}")
 
     if selected_page == DATASTORE_PAGE:
         DataStorePage(presenter=presenter).render()

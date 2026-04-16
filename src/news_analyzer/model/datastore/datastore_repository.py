@@ -18,6 +18,106 @@ try:
 except Exception:  # noqa: BLE001
     datastore = None  # type: ignore[assignment]
 
+SECTOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "technology": (
+        "technology",
+        "tech",
+        "software",
+        "semiconductor",
+        "semiconductors",
+        "chip",
+        "chips",
+        "artificial intelligence",
+        "cloud computing",
+        "cybersecurity",
+    ),
+    "energy": (
+        "energy",
+        "oil",
+        "gas",
+        "lng",
+        "renewable",
+        "renewables",
+        "solar",
+        "wind power",
+        "utilities",
+    ),
+    "healthcare": (
+        "healthcare",
+        "health care",
+        "biotech",
+        "biotechnology",
+        "pharma",
+        "pharmaceutical",
+        "pharmaceuticals",
+        "medical device",
+        "hospital",
+    ),
+    "financials": (
+        "financials",
+        "financial",
+        "bank",
+        "banking",
+        "insurance",
+        "asset management",
+        "fintech",
+        "investment",
+    ),
+    "industrials": (
+        "industrials",
+        "industrial",
+        "manufacturing",
+        "aerospace",
+        "defense",
+        "transportation",
+        "logistics",
+        "construction",
+    ),
+    "consumer": (
+        "consumer",
+        "retail",
+        "e-commerce",
+        "ecommerce",
+        "apparel",
+        "luxury",
+        "food",
+        "beverage",
+        "automotive",
+    ),
+    "communication services": (
+        "communication services",
+        "media",
+        "telecom",
+        "telecommunications",
+        "streaming",
+        "advertising",
+        "social media",
+    ),
+    "materials": (
+        "materials",
+        "mining",
+        "metals",
+        "chemicals",
+        "steel",
+        "copper",
+        "gold",
+        "lithium",
+    ),
+    "real estate": (
+        "real estate",
+        "reit",
+        "property",
+        "commercial real estate",
+        "housing",
+    ),
+    "utilities": (
+        "utilities",
+        "power grid",
+        "electric utility",
+        "water utility",
+    ),
+}
+
 
 @dataclass
 class FirestoreConfig:
@@ -243,10 +343,11 @@ class FirestoreRepository:
 
         filters = query_filter or FirestoreQuery(**kwargs)
         fetch_limit = max(1, int(filters.limit))
+        scan_limit = max(fetch_limit, 5000)
 
         query = self.client.query(kind=self.collection_name)
         try:
-            rows = [self._normalize_row(dict(item)) for item in query.fetch(limit=fetch_limit * 5)]
+            rows = [self._normalize_row(dict(item)) for item in query.fetch(limit=scan_limit)]
         except Exception as exc:  # noqa: BLE001
             self.last_error = f"Datastore query failed: {exc}"
             return []
@@ -329,7 +430,7 @@ class FirestoreRepository:
             return False
 
         sector_token = (filters.industry_sector or "").strip().lower()
-        if sector_token and not self._record_contains_text(row, sector_token):
+        if sector_token and not self._record_matches_sector(row, sector_token):
             return False
 
         source_token = (filters.source_contains or "").strip().lower()
@@ -393,6 +494,56 @@ class FirestoreRepository:
             if token in name or token in entity_type:
                 return True
         return False
+
+    @classmethod
+    def _record_matches_sector(cls, row: dict[str, Any], requested_sector: str) -> bool:
+        """Match a record against a canonical sector using stored or inferred labels."""
+        normalized_requested = cls._normalize_sector_label(requested_sector)
+        if not normalized_requested:
+            return True
+
+        stored_sector = cls._normalize_sector_label(str(row.get("industry_sector", "")).strip())
+        if stored_sector:
+            return stored_sector == normalized_requested
+
+        inferred_sector = cls._infer_sector_from_record(row)
+        return inferred_sector == normalized_requested
+
+    @classmethod
+    def _infer_sector_from_record(cls, row: dict[str, Any]) -> str:
+        """Infer a sector from targeted metadata fields when no stored sector exists."""
+        search_texts: list[str] = [
+            str(row.get("company_keyword", "")).lower(),
+            str(row.get("query", "")).lower(),
+            str(row.get("title", "")).lower(),
+            str(row.get("description", "")).lower(),
+        ]
+
+        entities = row.get("entities", [])
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            search_texts.append(str(entity.get("name", "")).lower())
+
+        combined_text = " ".join(part for part in search_texts if part).strip()
+        if not combined_text:
+            return ""
+
+        for canonical, aliases in SECTOR_ALIASES.items():
+            if any(alias in combined_text for alias in aliases):
+                return canonical
+        return ""
+
+    @staticmethod
+    def _normalize_sector_label(value: str) -> str:
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return ""
+
+        for canonical, aliases in SECTOR_ALIASES.items():
+            if normalized == canonical or normalized in aliases:
+                return canonical
+        return normalized
 
     @staticmethod
     def _parse_datetime(value: str | None) -> datetime | None:

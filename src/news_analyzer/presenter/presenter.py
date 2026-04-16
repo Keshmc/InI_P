@@ -194,17 +194,17 @@ class NewsPresenter:
         if result.errors:
             return PresenterResponse(
                 ok=False,
-                message=f"Search finished with {len(result.errors)} error(s).",
+                message=f"Analysis finished with {len(result.errors)} issue(s).",
                 payload=payload,
             )
 
         message = (
-            f"Search finished. {result.summary.articles_found} fetched, "
-            f"{result.summary.existing_articles} already in Firestore, "
-            f"{result.summary.new_articles} new."
+            f"Analysis complete. {result.summary.articles_found} articles found, "
+            f"{result.summary.existing_articles} already saved, "
+            f"{result.summary.new_articles} newly processed."
         )
         if result.warnings:
-            message += f" {len(result.warnings)} warning(s)."
+            message += f" {len(result.warnings)} note(s) available."
         return PresenterResponse(ok=True, message=message, payload=payload)
 
     def store_last_search_to_datastore(self) -> PresenterResponse:
@@ -219,14 +219,14 @@ class NewsPresenter:
         if self.datastore_repository is None or not self.datastore_repository.is_available:
             return PresenterResponse(
                 ok=False,
-                message="Firestore is not available.",
+                message="The saved article store is not available.",
                 payload={"saved_count": 0},
             )
 
         saved_count = self.datastore_repository.save_records(self.last_search_result.records)
         total = len(self.last_search_result.records)
         if saved_count < total:
-            detail = self.datastore_repository.last_error or "Unknown Firestore write issue."
+            detail = self.datastore_repository.last_error or "Unknown storage issue."
             return PresenterResponse(
                 ok=False,
                 message=f"Stored {saved_count}/{total} record(s). Last error: {detail}",
@@ -234,7 +234,7 @@ class NewsPresenter:
             )
         return PresenterResponse(
             ok=True,
-            message=f"Stored {saved_count} record(s) in Firestore.",
+            message=f"Stored {saved_count} record(s) in the saved article store.",
             payload={"saved_count": saved_count},
         )
 
@@ -243,7 +243,7 @@ class NewsPresenter:
         if self.datastore_repository is None or not self.datastore_repository.is_available:
             return PresenterResponse(
                 ok=False,
-                message="Firestore is not available.",
+                message="The saved article store is not available.",
                 payload={"records": [], "count": 0},
             )
 
@@ -251,7 +251,7 @@ class NewsPresenter:
         if self.datastore_repository.last_error:
             return PresenterResponse(
                 ok=False,
-                message=f"Firestore query failed: {self.datastore_repository.last_error}",
+                message=f"Loading saved articles failed: {self.datastore_repository.last_error}",
                 payload={"records": [], "count": 0, "error": self.datastore_repository.last_error},
             )
 
@@ -272,7 +272,7 @@ class NewsPresenter:
         }
         return PresenterResponse(
             ok=True,
-            message=f"Loaded {len(records)} record(s) from Firestore.",
+            message=f"Loaded {len(records)} saved article(s).",
             payload=payload,
         )
 
@@ -287,7 +287,7 @@ class NewsPresenter:
         if self.datastore_repository is None or not self.datastore_repository.is_available:
             return PresenterResponse(
                 ok=False,
-                message="Firestore is not available.",
+                message="The saved article store is not available.",
                 payload={"matches": [], "reports": {}, "record_count": 0},
             )
 
@@ -295,7 +295,7 @@ class NewsPresenter:
         if self.datastore_repository.last_error:
             return PresenterResponse(
                 ok=False,
-                message=f"Firestore query failed: {self.datastore_repository.last_error}",
+                message=f"Loading publisher data failed: {self.datastore_repository.last_error}",
                 payload={"matches": [], "reports": {}, "record_count": 0, "error": self.datastore_repository.last_error},
             )
 
@@ -310,8 +310,8 @@ class NewsPresenter:
         return PresenterResponse(
             ok=True,
             message=(
-                f"Publisher directory loaded. {payload['matched_publishers']} match(es) "
-                f"from {payload['total_publishers']} publisher(s)."
+                f"Loaded publisher summary for {payload['matched_publishers']} match(es) "
+                f"across {payload['total_publishers']} publisher(s)."
             ),
             payload=payload,
         )

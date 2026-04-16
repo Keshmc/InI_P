@@ -30,8 +30,9 @@ class PublisherPage:
 
         with form_col:
             st.title("Publisher Sentiment")
-            st.caption("Ueberblick ueber alle Publisher aus dem Datastore.")
-            summary_reload = st.button("Summary laden", type="primary", width="stretch")
+            st.caption("See how publishers tend to write across the saved article collection.")
+            st.caption("Each publisher is summarized by its average article sentiment.")
+            summary_reload = st.button("Refresh summary", type="primary", width="stretch")
             if summary_reload or self._SUMMARY_PAYLOAD_KEY not in st.session_state:
                 self._load_summary_payload()
 
@@ -47,12 +48,12 @@ class PublisherPage:
                 st.error(message)
 
         if not isinstance(payload, dict):
-            st.info("Keine Publisher-Daten geladen.")
+            st.info("No publisher data has been loaded yet.")
             return
 
         matches = payload.get("matches", [])
         if not matches:
-            st.info("Keine Publisher-Daten im Datastore vorhanden.")
+            st.info("No publisher data is available yet.")
             return
 
         total_publishers = int(payload.get("total_publishers", 0))
@@ -77,7 +78,7 @@ class PublisherPage:
             render_sentiment_meter(average_score)
 
         st.divider()
-        st.markdown("#### Publisher Distribution")
+        st.markdown("#### Publisher Sentiment Mix")
         distribution_rows = [
             {"label": "Positive", "count": positive_count},
             {"label": "Neutral", "count": neutral_count},
@@ -149,10 +150,10 @@ class PublisherPage:
                 use_container_width=True,
             )
         else:
-            st.info("Keine Publisher-Rangliste vorhanden.")
+            st.info("No publisher ranking is available yet.")
 
         st.divider()
-        st.markdown("#### Strongest Sentiment by Publisher")
+        st.markdown("#### Publishers With Strongest Sentiment")
         positive_rows = sorted(
             self._build_match_rows(matches),
             key=lambda row: float(row.get("avg_score", 0.0)),
@@ -164,10 +165,10 @@ class PublisherPage:
         )[:10]
         col_positive, col_negative = st.columns(2)
         with col_positive:
-            st.caption("Top Positive")
+            st.caption("Most positive")
             st.dataframe(positive_rows, width="stretch", hide_index=True)
         with col_negative:
-            st.caption("Top Negative")
+            st.caption("Most negative")
             st.dataframe(negative_rows, width="stretch", hide_index=True)
 
         st.divider()

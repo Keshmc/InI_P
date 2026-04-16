@@ -43,6 +43,8 @@ class NewsSearchPage:
 
         with form_col:
             st.title("News Search")
+            st.caption("Search by keyword or choose a trending topic to analyze recent coverage.")
+            st.caption("New articles are analyzed and added to the saved article library automatically.")
 
             if st.session_state.get("search_mode") not in {"Keyword", "Trend"}:
                 st.session_state["search_mode"] = "Keyword"
@@ -56,7 +58,7 @@ class NewsSearchPage:
             else:
                 if st.session_state.get("search_trend") not in TREND_OPTIONS:
                     st.session_state["search_trend"] = TREND_OPTIONS[0]
-                trend = st.selectbox("Trend Ticker", options=TREND_OPTIONS, key="search_trend")
+                trend = st.selectbox("Trending Topic", options=TREND_OPTIONS, key="search_trend")
                 keyword = trend
 
             period_default_index = PERIOD_OPTIONS.index("1d")
@@ -66,11 +68,12 @@ class NewsSearchPage:
                 index=period_default_index,
                 key="search_period",
             )
-            st.caption("All available matches in the selected time interval will be processed.")
+            st.caption("All matching articles in the selected interval will be processed.")
             if mode == "Trend":
-                st.caption("Trend-Ticker werden als Keyword-Suche ausgefuhrt und fortlaufend in der Datenbank gesammelt.")
+                st.caption("Trend mode treats the selected topic as a keyword and keeps building a saved history.")
 
             with st.expander("Advanced Settings", expanded=False):
+                st.caption("Use these options if you want deeper analysis for each article.")
                 col_a, col_b = st.columns(2)
                 with col_a:
                     extract_full_text = st.checkbox(
@@ -84,9 +87,9 @@ class NewsSearchPage:
                         key="search_include_entities",
                     )
                 with col_b:
-                    st.info("No artificial UI cap. Provider limits are handled automatically.")
+                    st.info("The UI does not cap results. Provider limits are handled automatically.")
 
-            submitted = st.button("Pipeline starten", type="primary", width="stretch", key="search_submit")
+            submitted = st.button("Run analysis", type="primary", width="stretch", key="search_submit")
 
             if not submitted:
                 return
@@ -109,7 +112,6 @@ class NewsSearchPage:
                 st.error("Please enter a keyword.")
                 return
 
-            # Remove previous results before loading the new search.
             st.session_state.pop(self._SEARCH_PAYLOAD_KEY, None)
             st.session_state.pop("news_search_message", None)
             st.session_state.pop("news_search_ok", None)
@@ -128,8 +130,8 @@ class NewsSearchPage:
         insights = build_datastore_insights(records)
 
         st.title("Search Analysis")
-        st.caption("Results are shown from the latest Firestore reload.")
-        st.caption("Datum/Zeit im UI: Schweiz (Europe/Zurich), Format dd.mm.yyyy und hh:mm.")
+        st.caption("These results reflect the latest saved records for this search.")
+        st.caption("All timestamps are shown in Europe/Zurich.")
 
         articles_found = int(summary.get("articles_found", 0))
         existing_articles = int(summary.get("existing_articles", 0))
@@ -142,32 +144,32 @@ class NewsSearchPage:
         status_ratio = min(loaded_articles / total_articles, 1.0)
         st.progress(
             status_ratio,
-            text=f"Status: {loaded_articles}/{total_articles} article(s) loaded from Firestore in the last {period_label}",
+            text=f"{loaded_articles}/{total_articles} saved article(s) are available for the selected {period_label} window.",
         )
 
         status_message = st.session_state.get("news_search_message", "Search completed.")
         if st.session_state.get("news_search_ok", True):
-            st.success(f"Status: {status_message}")
+            st.success(status_message)
         else:
-            st.warning(f"Status: {status_message}")
+            st.warning(status_message)
 
         st.divider()
         metric_cols = st.columns(6)
         metric_cols[0].metric("Fetched", str(articles_found))
-        metric_cols[1].metric("Already in DB", str(existing_articles))
+        metric_cols[1].metric("Already Saved", str(existing_articles))
         metric_cols[2].metric("New", str(new_articles))
         metric_cols[3].metric("Analyzed", str(analyzed_articles))
         metric_cols[4].metric("Saved", str(saved_articles))
         metric_cols[5].metric("Loaded", str(loaded_articles))
 
-        st.info("Neue Artikel wurden automatisch in Firestore gespeichert und danach neu geladen.")
+        st.info("New articles are saved automatically before the results view is refreshed.")
 
         if warnings:
-            with st.expander(f"Warnings ({len(warnings)})"):
+            with st.expander(f"Processing notes ({len(warnings)})"):
                 for warning in warnings:
                     st.write(f"- {warning}")
         if errors:
-            with st.expander(f"Errors ({len(errors)})"):
+            with st.expander(f"Issues ({len(errors)})"):
                 for error in errors:
                     st.write(f"- {error}")
 
@@ -228,13 +230,13 @@ class NewsSearchPage:
                 )
 
         st.divider()
-        st.markdown("#### Sentiment Trend (Publication Time)")
+        st.markdown("#### Sentiment Over Time")
         trend_rows: list[dict[str, Any]] = []
         for item in insights.trend_points:
             row = item.as_dict()
             date_value, time_value = format_swiss_date_time(row.get("published_time", ""))
-            row["published_date_ch"] = date_value
-            row["published_time_ch"] = time_value
+            row["published_date_local"] = date_value
+            row["published_time_local"] = time_value
             trend_rows.append(row)
         if trend_rows:
             st.vega_lite_chart(
@@ -245,7 +247,7 @@ class NewsSearchPage:
                         "x": {
                             "field": "published_time",
                             "type": "temporal",
-                            "title": "Zeit (CH)",
+                            "title": "Published time (Zurich)",
                             "axis": {"format": "%d.%m.%Y %H:%M"},
                         },
                         "y": {
@@ -257,8 +259,8 @@ class NewsSearchPage:
                         "tooltip": [
                             {"field": "title", "type": "nominal", "title": "Title"},
                             {"field": "source", "type": "nominal", "title": "Source"},
-                            {"field": "published_date_ch", "type": "nominal", "title": "Datum"},
-                            {"field": "published_time_ch", "type": "nominal", "title": "Zeit (CH)"},
+                            {"field": "published_date_local", "type": "nominal", "title": "Date"},
+                            {"field": "published_time_local", "type": "nominal", "title": "Time (Zurich)"},
                             {"field": "sentiment_score", "type": "quantitative", "title": "Sentiment"},
                         ],
                     },
@@ -278,7 +280,7 @@ class NewsSearchPage:
             st.info("No entities extracted.")
 
         st.divider()
-        st.markdown("#### Extracted Data")
+        st.markdown("#### Results Table")
         filtered_rows = self._render_table_filters_and_data(records)
         st.caption(f"Showing: {len(filtered_rows)} / {len(records)} rows")
 
@@ -309,10 +311,10 @@ class NewsSearchPage:
     def _render_table_filters_and_data(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            text_filter = st.text_input("Filter Text (Title/Source/Trend)", value="").strip().lower()
+            text_filter = st.text_input("Search title, source, trend, or entities", value="").strip().lower()
         with col_b:
             sentiment_min, sentiment_max = st.slider(
-                "Sentiment Range",
+                "Sentiment range",
                 min_value=-1.0,
                 max_value=1.0,
                 value=(-1.0, 1.0),
@@ -321,7 +323,7 @@ class NewsSearchPage:
         with col_c:
             all_statuses = sorted({str(row.get("status", "unknown")) for row in records})
             selected_status = st.multiselect(
-                "Status",
+                "Processing status",
                 options=all_statuses,
                 default=all_statuses,
             )
@@ -552,9 +554,10 @@ class NewsSearchPage:
         return value
 
     def _show_loading_screen(self, request: SearchRequest):
-        progress = st.progress(0.0, text="Pipeline started...")
-        status_line = st.empty()
-        stat_line = st.empty()
+        progress_placeholder = st.empty()
+        caption_placeholder = st.empty()
+        progress = progress_placeholder.progress(0.0, text="Starting analysis...")
+        caption_placeholder.caption("This can take a little longer for larger time windows.")
 
         def _on_progress(update: PipelineProgress) -> None:
             safe_total = max(int(update.total), 1)
@@ -562,15 +565,7 @@ class NewsSearchPage:
             ratio = self._build_progress_ratio(update.phase, safe_processed, safe_total)
             progress.progress(
                 ratio,
-                text=update.message,
-            )
-            status_line.caption(
-                f"Phase: {update.phase} | Step: {safe_processed}/{safe_total}"
-            )
-            stat_line.caption(
-                "Existing/New/Analyzed/Saved/Loaded: "
-                f"{update.existing_articles}/{update.new_articles}/"
-                f"{update.analyzed_articles}/{update.saved_articles}/{update.loaded_articles}"
+                text=self._build_progress_message(update, safe_processed, safe_total),
             )
 
         response = self.presenter.run_news_search(request, progress_callback=_on_progress)
@@ -582,21 +577,26 @@ class NewsSearchPage:
         progress.progress(
             1.0,
             text=(
-                "Pipeline completed. "
-                f"{len(records)} out of {final_total} article(s) loaded from Firestore."
+                "Analysis complete. "
+                f"{len(records)} of {final_total} saved article(s) are ready."
             ),
         )
-        status_line.caption("Status: pipeline completed")
-        stat_line.caption(
-            "Fetched/Existing/New/Analyzed/Saved/Loaded: "
-            f"{int(summary.get('articles_found', 0))}/"
-            f"{int(summary.get('existing_articles', 0))}/"
-            f"{int(summary.get('new_articles', 0))}/"
-            f"{int(summary.get('analyzed_articles', 0))}/"
-            f"{int(summary.get('saved_articles', 0))}/"
-            f"{int(summary.get('loaded_articles', len(records)))}"
-        )
+        progress_placeholder.empty()
+        caption_placeholder.empty()
         return response
+
+    @staticmethod
+    def _build_progress_message(update: PipelineProgress, processed: int, total: int) -> str:
+        """Return a short, user-friendly progress label for the loading bar."""
+        phase_messages = {
+            "collect": "Collecting articles...",
+            "check_existing": "Checking which articles are already saved...",
+            "analyze": f"Analyzing articles ({processed}/{total})...",
+            "persist": "Saving new articles...",
+            "reload": "Refreshing the saved results...",
+            "done": "Analysis complete.",
+        }
+        return phase_messages.get(update.phase, "Processing...")
 
     def _build_progress_ratio(self, phase: str, processed: int, total: int) -> float:
         if phase == "done":

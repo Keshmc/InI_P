@@ -1,8 +1,8 @@
-"""Datastore dashboard page with aggregated analytics."""
+"""Article library page with overview analytics and filtered search."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from dateutil import parser as date_parser
@@ -15,46 +15,81 @@ from news_analyzer.view.utils import format_swiss_date_time
 
 
 class DataStorePage:
-    """Datastore dashboard with trend/entity/sentiment analytics."""
+    """Owns the article library overview and saved-article search UI."""
 
-    _STATE_KEY = "datastore_dashboard_payload"
-    _MESSAGE_KEY = "datastore_dashboard_message"
-    _OK_KEY = "datastore_dashboard_ok"
+    _INDUSTRY_SECTOR_OPTIONS = [
+        "Any",
+        "Technology",
+        "Energy",
+        "Healthcare",
+        "Financials",
+        "Industrials",
+        "Consumer",
+        "Communication Services",
+        "Materials",
+        "Real Estate",
+        "Utilities",
+    ]
+
+    _MODE_KEY = "article_library_mode"
+
+    _OVERVIEW_STATE_KEY = "article_library_overview_payload"
+    _OVERVIEW_MESSAGE_KEY = "article_library_overview_message"
+    _OVERVIEW_OK_KEY = "article_library_overview_ok"
+
+    _SEARCH_STATE_KEY = "article_library_search_payload"
+    _SEARCH_MESSAGE_KEY = "article_library_search_message"
+    _SEARCH_OK_KEY = "article_library_search_ok"
+
     _LIMIT = 5000
-
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
 
     def render(self) -> None:
-        st.title("Datastore")
-        st.caption("Allgemeine Daten und Trends aus allen gespeicherten Artikeln.")
-        st.caption("Datum/Zeit im UI: Schweiz (Europe/Zurich), Format dd.mm.yyyy und hh:mm.")
+        st.title("Article Library")
+        st.caption("Browse the saved article collection or search it with detailed filters.")
+        st.caption("All timestamps are shown in Europe/Zurich.")
 
+        if st.session_state.get(self._MODE_KEY) not in {"Overview", "Search"}:
+            st.session_state[self._MODE_KEY] = "Overview"
+
+        mode = st.radio(
+            "View Mode",
+            options=["Overview", "Search"],
+            horizontal=True,
+            key=self._MODE_KEY,
+        )
+
+        if mode == "Overview":
+            self._render_overview_mode()
+            return
+
+        self._render_search_mode()
+
+    def _render_overview_mode(self) -> None:
         refresh_col, info_col = st.columns([1, 3])
         with refresh_col:
-            refresh_clicked = st.button("Reload Datastore", width="stretch")
+            refresh_clicked = st.button("Refresh library", width="stretch")
         with info_col:
             st.caption(
-                f"Datastore wird automatisch geladen (bis zu {self._LIMIT} Artikel). "
-                "Mit Reload werden die neuesten Daten neu abgerufen."
+                f"The library loads automatically (up to {self._LIMIT} articles). "
+                "Use refresh to fetch the newest saved records."
             )
 
         if refresh_clicked:
-            self._load_payload(force_reload=True)
+            self._load_overview_payload(force_reload=True)
         else:
-            self._load_payload(force_reload=False)
+            self._load_overview_payload(force_reload=False)
 
-        payload = st.session_state.get(self._STATE_KEY, {})
-        message = st.session_state.get(self._MESSAGE_KEY, "")
-        if message:
-            if st.session_state.get(self._OK_KEY, True):
-                st.success(message)
-            else:
-                st.error(message)
+        payload = st.session_state.get(self._OVERVIEW_STATE_KEY, {})
+        self._render_message(
+            message=str(st.session_state.get(self._OVERVIEW_MESSAGE_KEY, "")),
+            ok=bool(st.session_state.get(self._OVERVIEW_OK_KEY, True)),
+        )
 
         records = payload.get("records", []) if isinstance(payload, dict) else []
         if not records:
-            st.info("Keine Datastore-Daten vorhanden oder geladen.")
+            st.info("No saved articles are available yet.")
             return
 
         insights = build_datastore_insights(records)
@@ -63,33 +98,217 @@ class DataStorePage:
         self._render_trend_chart(insights=insights)
         self._render_entity_chart(insights=insights)
         self._render_publisher_chart(insights=insights)
-        self._render_article_table(insights=insights)
+        self._render_article_table(insights=insights, title="Stored Articles")
 
-    def _load_payload(self, force_reload: bool) -> None:
-        if not force_reload and self._STATE_KEY in st.session_state:
+    def _render_search_mode(self) -> None:
+        st.markdown("#### Saved Article Search")
+        st.caption(
+            "Retrieve articles that mention one or more companies, match an industry sector, "
+            "meet a sentiment threshold, and fall within a publication date range."
+        )
+
+        default_start = date.today() - timedelta(days=30)
+        default_end = date.today()
+
+        with st.form("article_library_search_form"):
+            company_text = st.text_input(
+                "Company names",
+                placeholder="e.g. NVIDIA, Apple, Tesla",
+                help="Separate multiple companies with commas.",
+                key="article_library_search_companies",
+            ).strip()
+
+            filter_col_a, filter_col_b, filter_col_c = st.columns(3)
+            with filter_col_a:
+                sector_text = st.selectbox(
+                    "Industry sector",
+                    options=self._INDUSTRY_SECTOR_OPTIONS,
+                    key="article_library_search_sector",
+                    help="Choose a standard sector label for a more reliable match.",
+                )
+                use_min_sentiment = st.checkbox(
+                    "Use minimum sentiment threshold",
+                    value=False,
+                    key="article_library_use_min_sentiment",
+                )
+                min_sentiment = st.slider(
+                    "Minimum sentiment",
+                    min_value=-1.0,
+                    max_value=1.0,
+                    value=0.1,
+                    step=0.05,
+                    disabled=not use_min_sentiment,
+                    key="article_library_min_sentiment",
+                )
+            with filter_col_b:
+                use_date_range = st.checkbox(
+                    "Use publication date range",
+                    value=False,
+                    key="article_library_use_date_range",
+                )
+                date_range = st.date_input(
+                    "Publication range",
+                    value=(default_start, default_end),
+                    disabled=not use_date_range,
+                    key="article_library_date_range",
+                )
+            with filter_col_c:
+                result_limit = st.selectbox(
+                    "Result limit",
+                    options=[50, 100, 250, 500, 1000],
+                    index=3,
+                    key="article_library_result_limit",
+                    help="Higher limits can take longer to load.",
+                )
+
+            search_clicked = st.form_submit_button("Run search", type="primary")
+
+        clear_clicked = st.button("Clear search results", width="stretch")
+
+        if clear_clicked:
+            st.session_state.pop(self._SEARCH_STATE_KEY, None)
+            st.session_state.pop(self._SEARCH_MESSAGE_KEY, None)
+            st.session_state.pop(self._SEARCH_OK_KEY, None)
+            st.rerun()
+
+        if search_clicked:
+            self._run_filtered_search(
+                company_text=company_text,
+                sector_text="" if sector_text == "Any" else sector_text,
+                use_min_sentiment=use_min_sentiment,
+                min_sentiment=min_sentiment,
+                use_date_range=use_date_range,
+                date_range=date_range,
+                result_limit=int(result_limit),
+            )
+
+        payload = st.session_state.get(self._SEARCH_STATE_KEY, {})
+        self._render_message(
+            message=str(st.session_state.get(self._SEARCH_MESSAGE_KEY, "")),
+            ok=bool(st.session_state.get(self._SEARCH_OK_KEY, True)),
+        )
+
+        if not isinstance(payload, dict) or not payload:
+            st.info("Run a search to see matching saved articles.")
+            return
+
+        records = payload.get("records", [])
+        filters_summary = payload.get("filters_summary", [])
+        if filters_summary:
+            st.markdown("#### Active Filters")
+            st.dataframe(filters_summary, width="stretch", hide_index=True)
+
+        if not records:
+            st.info("No saved articles matched the selected filters.")
+            return
+
+        insights = build_datastore_insights(records)
+        self._render_search_summary(records=records, payload=payload, insights=insights)
+        self._render_sentiment_section(insights=insights)
+        self._render_publisher_chart(insights=insights)
+        self._render_trend_chart(insights=insights)
+        self._render_article_table(insights=insights, title="Matching Articles")
+
+    def _load_overview_payload(self, force_reload: bool) -> None:
+        if not force_reload and self._OVERVIEW_STATE_KEY in st.session_state:
             return
 
         response = self.presenter.query_datastore(DatastoreQuery(limit=self._LIMIT))
-        st.session_state[self._STATE_KEY] = response.payload
-        st.session_state[self._MESSAGE_KEY] = response.message
-        st.session_state[self._OK_KEY] = response.ok
+        st.session_state[self._OVERVIEW_STATE_KEY] = response.payload
+        st.session_state[self._OVERVIEW_MESSAGE_KEY] = response.message
+        st.session_state[self._OVERVIEW_OK_KEY] = response.ok
+
+    def _run_filtered_search(
+        self,
+        company_text: str,
+        sector_text: str,
+        use_min_sentiment: bool,
+        min_sentiment: float,
+        use_date_range: bool,
+        date_range: Any,
+        result_limit: int,
+    ) -> None:
+        company_tokens = self._parse_company_tokens(company_text)
+        date_from, date_to = self._resolve_date_filters(date_range=date_range, enabled=use_date_range)
+
+        st.session_state.pop(self._SEARCH_STATE_KEY, None)
+        st.session_state.pop(self._SEARCH_MESSAGE_KEY, None)
+        st.session_state.pop(self._SEARCH_OK_KEY, None)
+
+        query = DatastoreQuery(
+            company_keyword=company_tokens[0] if len(company_tokens) == 1 else None,
+            company_keywords=company_tokens if len(company_tokens) > 1 else None,
+            industry_sector=sector_text or None,
+            date_from=date_from,
+            date_to=date_to,
+            min_sentiment=min_sentiment if use_min_sentiment else None,
+            limit=max(1, min(int(result_limit), self._LIMIT)),
+        )
+
+        response = self.presenter.query_datastore(query)
+        payload = dict(response.payload)
+        payload["filters_summary"] = self._build_filters_summary(
+            company_tokens=company_tokens,
+            sector_text=sector_text,
+            use_min_sentiment=use_min_sentiment,
+            min_sentiment=min_sentiment,
+            use_date_range=use_date_range,
+            date_from=date_from,
+            date_to=date_to,
+            result_limit=result_limit,
+        )
+        st.session_state[self._SEARCH_STATE_KEY] = payload
+        st.session_state[self._SEARCH_MESSAGE_KEY] = response.message
+        st.session_state[self._SEARCH_OK_KEY] = response.ok
+
+    def _render_search_summary(
+        self,
+        records: list[dict[str, Any]],
+        payload: dict[str, Any],
+        insights: DatastoreInsights,
+    ) -> None:
+        st.divider()
+        st.markdown("#### Search Results")
+        st.caption("These metrics summarize the articles returned by your current filters.")
+
+        oldest, newest = self._resolve_date_range(records)
+        metrics = st.columns(5)
+        metrics[0].metric("Matching Articles", str(int(payload.get("count", len(records)))))
+        metrics[1].metric("Average Score", f"{float(payload.get('avg_sentiment_score', 0.0)):+.3f}")
+        metrics[2].metric("Average Magnitude", f"{float(payload.get('avg_sentiment_magnitude', 0.0)):.3f}")
+        metrics[3].metric("Unique Publishers", str(int(insights.unique_publishers)))
+        metrics[4].metric("Unique Trends", str(int(insights.unique_trends)))
+
+        time_col_a, time_col_b = st.columns(2)
+        with time_col_a:
+            st.markdown("**Oldest Match (Zurich)**")
+            st.caption(oldest)
+        with time_col_b:
+            st.markdown("**Newest Match (Zurich)**")
+            st.caption(newest)
 
     def _render_facts(self, records: list[dict[str, Any]], payload: dict[str, Any], insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Stored Articles and Facts")
+        st.markdown("#### Overview")
 
         oldest, newest = self._resolve_date_range(records)
-        metrics = st.columns(6)
+        metrics = st.columns(4)
         metrics[0].metric("Stored Articles", str(int(payload.get("count", len(records)))))
         metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
         metrics[2].metric("Unique Trends", str(int(insights.unique_trends)))
         metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
-        metrics[4].metric("Oldest Article (CH)", oldest)
-        metrics[5].metric("Newest Article (CH)", newest)
+
+        time_col_a, time_col_b = st.columns(2)
+        with time_col_a:
+            st.markdown("**Oldest Article (Zurich)**")
+            st.caption(oldest)
+        with time_col_b:
+            st.markdown("**Newest Article (Zurich)**")
+            st.caption(newest)
 
     def _render_sentiment_section(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Allgemeines Sentiment und Stimmung")
+        st.markdown("#### Sentiment Overview")
 
         col_stats, col_meter = st.columns([1.4, 3])
         with col_stats:
@@ -98,7 +317,7 @@ class DataStorePage:
         with col_meter:
             render_sentiment_meter(insights.sentiment.average_score)
 
-        st.markdown("#### Positive / Neutral / Negative")
+        st.markdown("#### Positive / Neutral / Negative Share")
         pie_values = insights.sentiment.as_distribution_rows()
         st.vega_lite_chart(
             pie_values,
@@ -126,9 +345,9 @@ class DataStorePage:
 
     def _render_trend_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Trends (Rangliste)")
+        st.markdown("#### Top Trends")
         if not insights.top_trends:
-            st.info("Keine Trends vorhanden.")
+            st.info("No trend data is available yet.")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_trends]
@@ -136,9 +355,9 @@ class DataStorePage:
 
     def _render_entity_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Entities (Rangliste)")
+        st.markdown("#### Top Entities")
         if not insights.top_entities:
-            st.info("Keine Entities vorhanden.")
+            st.info("No entities are available yet.")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_entities]
@@ -146,17 +365,18 @@ class DataStorePage:
 
     def _render_publisher_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Most News by Publisher (Rangliste)")
+        st.markdown("#### Top Publishers")
         if not insights.top_publishers:
-            st.info("Keine Publisher-Daten vorhanden.")
+            st.info("No publisher data is available yet.")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_publishers]
         self._render_ranked_bar(rows=rows, label_field="Publisher", value_field="Articles", color="#935116")
 
-    def _render_article_table(self, insights: DatastoreInsights) -> None:
+    def _render_article_table(self, insights: DatastoreInsights, title: str) -> None:
         st.divider()
-        st.markdown("#### Stored Articles")
+        st.markdown(f"#### {title}")
+        st.caption("Use the table to review article headlines, publishers, trends, and sentiment scores.")
         display_rows: list[dict[str, Any]] = []
         for row in insights.article_facts:
             raw_dt = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
@@ -208,6 +428,42 @@ class DataStorePage:
         with table_col:
             st.dataframe(ranked_rows, width="stretch", hide_index=True)
 
+    def _build_filters_summary(
+        self,
+        company_tokens: list[str],
+        sector_text: str,
+        use_min_sentiment: bool,
+        min_sentiment: float,
+        use_date_range: bool,
+        date_from: str | None,
+        date_to: str | None,
+        result_limit: int,
+    ) -> list[dict[str, str]]:
+        """Build a compact summary table for the current search filters."""
+        rows = [
+            {
+                "Companies": ", ".join(company_tokens) if company_tokens else "Any",
+                "Industry Sector": sector_text or "Any",
+                "Minimum Sentiment": f"{min_sentiment:+.2f}" if use_min_sentiment else "Any",
+                "Publication Range": self._format_range_label(date_from, date_to) if use_date_range else "Any",
+                "Result Limit": str(int(result_limit)),
+            }
+        ]
+        return rows
+
+    @staticmethod
+    def _parse_company_tokens(raw_value: str) -> list[str]:
+        seen: set[str] = set()
+        tokens: list[str] = []
+        for token in str(raw_value).split(","):
+            clean = token.strip()
+            key = clean.casefold()
+            if not clean or key in seen:
+                continue
+            seen.add(key)
+            tokens.append(clean)
+        return tokens
+
     def _resolve_date_range(self, records: list[dict[str, Any]]) -> tuple[str, str]:
         parsed_dates: list[datetime] = []
         for row in records:
@@ -225,6 +481,48 @@ class DataStorePage:
         oldest = f"{oldest_date} | {oldest_time}"
         newest = f"{newest_date} | {newest_time}"
         return oldest, newest
+
+    @staticmethod
+    def _resolve_date_filters(date_range: Any, enabled: bool) -> tuple[str | None, str | None]:
+        if not enabled:
+            return None, None
+
+        if isinstance(date_range, tuple):
+            values = list(date_range)
+        elif isinstance(date_range, list):
+            values = date_range
+        else:
+            values = [date_range]
+
+        if not values:
+            return None, None
+
+        start_value = values[0]
+        end_value = values[-1]
+        if not isinstance(start_value, date) or not isinstance(end_value, date):
+            return None, None
+
+        start_dt = datetime.combine(start_value, datetime.min.time()).isoformat()
+        end_dt = datetime.combine(end_value, datetime.max.time().replace(microsecond=0)).isoformat()
+        return start_dt, end_dt
+
+    @staticmethod
+    def _format_range_label(date_from: str | None, date_to: str | None) -> str:
+        if not date_from or not date_to:
+            return "Any"
+
+        from_date, _ = format_swiss_date_time(date_from)
+        to_date, _ = format_swiss_date_time(date_to)
+        return f"{from_date} to {to_date}"
+
+    @staticmethod
+    def _render_message(message: str, ok: bool) -> None:
+        if not message:
+            return
+        if ok:
+            st.success(message)
+        else:
+            st.error(message)
 
     @staticmethod
     def _parse_datetime(value: str | None) -> datetime | None:

@@ -11,7 +11,7 @@ DATASTORE_PAGE = "datastore"
 PUBLISHER_PAGE = "publisher_sentiment"
 _NAV_OPTIONS = [
     ("News Search", NEWS_SEARCH_PAGE, "home"),
-    ("Datastore", DATASTORE_PAGE, "grid"),
+    ("Article Library", DATASTORE_PAGE, "grid"),
     ("Publisher Sentiment", PUBLISHER_PAGE, "search"),
 ]
 
@@ -44,12 +44,12 @@ def render_sidebar(
 
     st.sidebar.divider()
     state_label = "running" if auto_trend_running else "stopped"
-    st.sidebar.caption(f"Trend Collector: {state_label}")
+    st.sidebar.caption(f"Background collector: {state_label}")
 
     if auto_trend_interval_minutes > 0:
-        st.sidebar.caption(f"Intervall: alle {auto_trend_interval_minutes} Minute(n)")
+        st.sidebar.caption(f"Runs every {auto_trend_interval_minutes} minute(s)")
     if auto_trend_last_run:
-        st.sidebar.caption(f"Letzter Lauf (CH): {format_swiss_timestamp(auto_trend_last_run)}")
+        st.sidebar.caption(f"Last run (Zurich): {format_swiss_timestamp(auto_trend_last_run)}")
 
     return selected
 
