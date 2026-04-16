@@ -27,6 +27,11 @@ from news_analyzer.view import run_view
 DEFAULT_CONFIG_PATH = ROOT / "config.yaml"
 
 
+def _is_cloud_run() -> bool:
+    """Return True when the app is running inside Cloud Run."""
+    return any(os.getenv(name) for name in ("K_SERVICE", "K_REVISION", "K_CONFIGURATION"))
+
+
 def _resolve_path(path_value: str | None) -> Path | None:
     """Resolve a config/env path into an existing absolute file path."""
     if not path_value:
@@ -64,6 +69,9 @@ def _bootstrap_credentials(datastore_payload: dict[str, Any]) -> str | None:
     if env_candidate is not None:
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(env_candidate)
         return str(env_candidate)
+
+    if _is_cloud_run():
+        return None
 
     raw_config_path = datastore_payload.get("credentials_path")
     config_candidate = _resolve_path(str(raw_config_path).strip())

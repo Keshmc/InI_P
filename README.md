@@ -93,6 +93,87 @@ Current long-term scheduler settings:
 
 Detailed scheduler behavior is documented in `docs/long-term-scheduler.md`.
 
+## Deploy To Google Cloud
+
+The application is best deployed as a public web app on `Cloud Run`.
+
+Why `Cloud Run` fits this project:
+
+- it exposes the Streamlit UI over HTTPS
+- it works well with Python containers
+- it can use a Google Cloud service account instead of a local JSON key file
+
+Important deployment note:
+
+- the built-in long-term background scheduler is process-local
+- on `Cloud Run`, instances can scale down, restart, or scale out
+- for reliable scheduled ingestion, prefer a separate `Cloud Run Job` plus `Cloud Scheduler`
+- for the web app service itself, disable the in-process scheduler with:
+  - `NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false`
+
+### 1. Prepare Google Cloud
+
+Make sure the target project exists and the required services are enabled:
+
+```bash
+gcloud config set project financial-news-analyzer-489418
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com datastore.googleapis.com language.googleapis.com
+```
+
+Create a dedicated runtime service account for the web app:
+
+```bash
+gcloud iam service-accounts create news-analyzer-run \
+  --display-name="News Analyzer Cloud Run"
+```
+
+Grant the service account access to Datastore mode data:
+
+```bash
+gcloud projects add-iam-policy-binding financial-news-analyzer-489418 \
+  --member="serviceAccount:news-analyzer-run@financial-news-analyzer-489418.iam.gserviceaccount.com" \
+  --role="roles/datastore.user"
+```
+
+If you want the Cloud NLP analysis to run in Google Cloud instead of falling back locally, also make sure the Natural Language API is enabled for the same project.
+
+### 2. Deploy The Web App
+
+This repository already contains:
+
+- `Dockerfile`
+- `.dockerignore`
+- `requirements.txt`
+
+Deploy from the repository root:
+
+```bash
+gcloud run deploy news-analyzer \
+  --source . \
+  --region europe-west1 \
+  --allow-unauthenticated \
+  --service-account news-analyzer-run@financial-news-analyzer-489418.iam.gserviceaccount.com \
+  --set-env-vars NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false
+```
+
+After a successful deployment, `gcloud` prints the public `https://...run.app` URL.
+
+### 3. Credentials On Cloud Run
+
+Do not ship the local JSON key from `secrets/` into production.
+
+- local development can still use `config.yaml` or `GOOGLE_APPLICATION_CREDENTIALS`
+- `Cloud Run` should use its attached service account via Application Default Credentials
+- the container build excludes `secrets/`
+
+### 4. Recommended Next Step For Long-Term Collection
+
+If you want the long-term ticker collection to run reliably in Google Cloud:
+
+1. keep the web UI on `Cloud Run`
+2. move scheduled ingestion into a `Cloud Run Job` or separate worker service
+3. trigger it with `Cloud Scheduler`
+
 ## Datastore Query Support
 
 The application supports filtered Datastore queries from the `Article Library` search mode.

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
+import os
 from pathlib import Path
 import threading
 from typing import Any
@@ -16,6 +17,20 @@ from news_analyzer.model.model import NewsAnalysisPipeline, SearchRequest
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_LONG_TERM_TICKERS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "Tesla", "MSFT", "Apple", "USA"]
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    """Read a boolean environment variable with a sensible fallback."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 @dataclass
@@ -41,10 +56,19 @@ class LongTermTrendConfig:
         if not tickers:
             tickers = list(DEFAULT_LONG_TERM_TICKERS)
 
+        enabled = _read_bool_env(
+            "NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED",
+            bool(payload.get("enabled", True)),
+        )
+        run_on_startup = _read_bool_env(
+            "NEWS_ANALYZER_LONG_TERM_TRENDS_RUN_ON_STARTUP",
+            bool(payload.get("run_on_startup", True)),
+        )
+
         return cls(
-            enabled=bool(payload.get("enabled", True)),
+            enabled=enabled,
             interval_minutes=max(1, int(payload.get("interval_minutes", 360))),
-            run_on_startup=bool(payload.get("run_on_startup", True)),
+            run_on_startup=run_on_startup,
             period=str(payload.get("period", "1d")).strip().lower() or "1d",
             max_results=max(1, int(payload.get("max_results", 300))),
             extract_full_text=bool(payload.get("extract_full_text", True)),
