@@ -8,9 +8,11 @@ from news_analyzer.view.utils import format_swiss_timestamp
 
 NEWS_SEARCH_PAGE = "news_search"
 DATASTORE_PAGE = "datastore"
+PUBLISHER_PAGE = "publisher_sentiment"
 _NAV_OPTIONS = [
     ("News Search", NEWS_SEARCH_PAGE, "home"),
     ("Datastore", DATASTORE_PAGE, "grid"),
+    ("Publisher Sentiment", PUBLISHER_PAGE, "search"),
 ]
 
 
@@ -142,6 +144,12 @@ def _render_icon(icon_name: str) -> str:
             '<rect x="13.5" y="4" width="6.5" height="6.5" rx="1.3"></rect>'
             '<rect x="4" y="13.5" width="6.5" height="6.5" rx="1.3"></rect>'
             '<rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.3"></rect>'
+            "</svg>"
+        ),
+        "search": (
+            '<svg viewBox="0 0 24 24" aria-hidden="true">'
+            '<circle cx="11" cy="11" r="6.5"></circle>'
+            '<path d="m16 16 4 4"></path>'
             "</svg>"
         ),
     }

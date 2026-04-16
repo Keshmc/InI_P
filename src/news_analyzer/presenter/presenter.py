@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from news_analyzer.model.datastore import DatastoreQuery, DatastoreRepository
 from news_analyzer.model.model import NewsAnalysisPipeline, PipelineProgress, SearchRequest, SearchResult
+from news_analyzer.model.publisher_sentiment import build_publisher_directory
 
 
 @dataclass
@@ -272,5 +273,45 @@ class NewsPresenter:
         return PresenterResponse(
             ok=True,
             message=f"Loaded {len(records)} record(s) from Firestore.",
+            payload=payload,
+        )
+
+    def search_publishers(
+        self,
+        query: str,
+        datastore_limit: int = 5000,
+        match_limit: int = 12,
+        article_limit: int = 30,
+    ) -> PresenterResponse:
+        """Load datastore records and build publisher sentiment search payload."""
+        if self.datastore_repository is None or not self.datastore_repository.is_available:
+            return PresenterResponse(
+                ok=False,
+                message="Firestore is not available.",
+                payload={"matches": [], "reports": {}, "record_count": 0},
+            )
+
+        records = self.datastore_repository.query_records(DatastoreQuery(limit=datastore_limit))
+        if self.datastore_repository.last_error:
+            return PresenterResponse(
+                ok=False,
+                message=f"Firestore query failed: {self.datastore_repository.last_error}",
+                payload={"matches": [], "reports": {}, "record_count": 0, "error": self.datastore_repository.last_error},
+            )
+
+        directory = build_publisher_directory(
+            records=records,
+            query=query,
+            result_limit=match_limit,
+            article_limit=article_limit,
+        )
+        payload = directory.as_dict()
+        payload["record_count"] = len(records)
+        return PresenterResponse(
+            ok=True,
+            message=(
+                f"Publisher directory loaded. {payload['matched_publishers']} match(es) "
+                f"from {payload['total_publishers']} publisher(s)."
+            ),
             payload=payload,
         )

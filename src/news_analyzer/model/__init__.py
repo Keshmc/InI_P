@@ -20,6 +20,14 @@ from .insights import (
     sentiment_label,
 )
 from .model import NewsAnalysisPipeline, PipelineProgress, SearchRequest, SearchResult, SearchSummary
+from .publisher_sentiment import (
+    PublisherArticleFact,
+    PublisherDirectory,
+    PublisherMatch,
+    PublisherReport,
+    build_publisher_directory,
+    build_publisher_report,
+)
 from .rss_feed import (
     ExtractedArticle,
     NewsArticle,
@@ -52,9 +60,15 @@ __all__ = [
     "SearchSummary",
     "SentimentOverview",
     "TrendPoint",
+    "PublisherArticleFact",
+    "PublisherDirectory",
+    "PublisherMatch",
+    "PublisherReport",
     "SentimentAnalyzer",
     "SentimentResult",
     "build_datastore_insights",
+    "build_publisher_directory",
+    "build_publisher_report",
     "build_sentiment_overview",
     "entities_to_display",
     "sentiment_label",
