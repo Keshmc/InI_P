@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from news_analyzer.view.utils import format_swiss_timestamp
 
 NEWS_SEARCH_PAGE = "news_search"
 DATASTORE_PAGE = "datastore"
@@ -46,7 +47,7 @@ def render_sidebar(
     if auto_trend_interval_minutes > 0:
         st.sidebar.caption(f"Intervall: alle {auto_trend_interval_minutes} Minute(n)")
     if auto_trend_last_run:
-        st.sidebar.caption(f"Last run (UTC): {auto_trend_last_run}")
+        st.sidebar.caption(f"Letzter Lauf (CH): {format_swiss_timestamp(auto_trend_last_run)}")
 
     return selected
 

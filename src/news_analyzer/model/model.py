@@ -16,7 +16,7 @@ from news_analyzer.model.rss_feed import RssArticleExtractor, RssFeedLoader
 class SearchRequest:
     """Input payload for one search + analysis run."""
 
-    mode: str  # "keyword" or "topic"
+    mode: str  # "keyword", "trend" (recommended), or legacy "topic"
     keyword: str = ""
     topic: str = ""
     period: str = "1d"
@@ -95,9 +95,10 @@ class NewsAnalysisPipeline:
         progress_callback: Callable[[PipelineProgress], None] | None = None,
     ) -> SearchResult:
         """Run end-to-end processing for one user request."""
-        mode = request.mode.strip().lower()
+        requested_mode = request.mode.strip().lower()
+        mode = "keyword" if requested_mode == "trend" else requested_mode
         if mode not in {"keyword", "topic"}:
-            raise ValueError("request.mode must be either 'keyword' or 'topic'.")
+            raise ValueError("request.mode must be 'keyword', 'trend', or legacy 'topic'.")
 
         raw_articles = self.rss_loader.search(
             mode=mode,
@@ -214,7 +215,7 @@ class NewsAnalysisPipeline:
                 "symbol": request.keyword.upper().strip() if mode == "keyword" else "",
                 "company_keyword": request.keyword.strip() if mode == "keyword" else "",
                 "query": request.keyword.strip() if mode == "keyword" else request.topic.strip().upper(),
-                "search_mode": mode,
+                "search_mode": "trend" if requested_mode == "trend" else mode,
                 "industry_sector": request.industry_sector.strip(),
                 "topic": request.topic.strip().upper() if mode == "topic" else "",
                 "period": request.period.strip().lower(),

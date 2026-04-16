@@ -11,10 +11,11 @@ import streamlit as st
 from news_analyzer.model import DatastoreInsights, DatastoreQuery, build_datastore_insights
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
+from news_analyzer.view.utils import format_swiss_date_time
 
 
 class DataStorePage:
-    """Datastore dashboard with topic/entity/sentiment analytics."""
+    """Datastore dashboard with trend/entity/sentiment analytics."""
 
     _STATE_KEY = "datastore_dashboard_payload"
     _MESSAGE_KEY = "datastore_dashboard_message"
@@ -27,6 +28,7 @@ class DataStorePage:
     def render(self) -> None:
         st.title("Datastore")
         st.caption("Allgemeine Daten und Trends aus allen gespeicherten Artikeln.")
+        st.caption("Datum/Zeit im UI: Schweiz (Europe/Zurich), Format dd.mm.yyyy und hh:mm.")
 
         refresh_col, info_col = st.columns([1, 3])
         with refresh_col:
@@ -58,7 +60,7 @@ class DataStorePage:
         insights = build_datastore_insights(records)
         self._render_facts(records=records, payload=payload, insights=insights)
         self._render_sentiment_section(insights=insights)
-        self._render_topic_chart(insights=insights)
+        self._render_trend_chart(insights=insights)
         self._render_entity_chart(insights=insights)
         self._render_publisher_chart(insights=insights)
         self._render_article_table(insights=insights)
@@ -80,10 +82,10 @@ class DataStorePage:
         metrics = st.columns(6)
         metrics[0].metric("Stored Articles", str(int(payload.get("count", len(records)))))
         metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
-        metrics[2].metric("Unique Topics", str(int(insights.unique_topics)))
+        metrics[2].metric("Unique Trends", str(int(insights.unique_trends)))
         metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
-        metrics[4].metric("Oldest Article", oldest)
-        metrics[5].metric("Newest Article", newest)
+        metrics[4].metric("Oldest Article (CH)", oldest)
+        metrics[5].metric("Newest Article (CH)", newest)
 
     def _render_sentiment_section(self, insights: DatastoreInsights) -> None:
         st.divider()
@@ -122,15 +124,15 @@ class DataStorePage:
             use_container_width=True,
         )
 
-    def _render_topic_chart(self, insights: DatastoreInsights) -> None:
+    def _render_trend_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Topics (Rangliste)")
-        if not insights.top_topics:
-            st.info("Keine Topics vorhanden.")
+        st.markdown("#### Top Trends (Rangliste)")
+        if not insights.top_trends:
+            st.info("Keine Trends vorhanden.")
             return
 
-        rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_topics]
-        self._render_ranked_bar(rows=rows, label_field="Topic", value_field="Articles", color="#2471A3")
+        rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_trends]
+        self._render_ranked_bar(rows=rows, label_field="Trend", value_field="Articles", color="#2471A3")
 
     def _render_entity_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
@@ -155,7 +157,17 @@ class DataStorePage:
     def _render_article_table(self, insights: DatastoreInsights) -> None:
         st.divider()
         st.markdown("#### Stored Articles")
-        st.dataframe(insights.article_facts, width="stretch", hide_index=True)
+        display_rows: list[dict[str, Any]] = []
+        for row in insights.article_facts:
+            raw_dt = str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+            date_value, time_value = format_swiss_date_time(raw_dt)
+            normalized = dict(row)
+            normalized["date"] = date_value
+            normalized["time"] = time_value
+            normalized.pop("published_date", None)
+            normalized.pop("published_at", None)
+            display_rows.append(normalized)
+        st.dataframe(display_rows, width="stretch", hide_index=True)
 
     def _render_ranked_bar(
         self,
@@ -208,8 +220,10 @@ class DataStorePage:
             return "-", "-"
 
         parsed_dates.sort()
-        oldest = parsed_dates[0].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        newest = parsed_dates[-1].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        oldest_date, oldest_time = format_swiss_date_time(parsed_dates[0])
+        newest_date, newest_time = format_swiss_date_time(parsed_dates[-1])
+        oldest = f"{oldest_date} | {oldest_time}"
+        newest = f"{newest_date} | {newest_time}"
         return oldest, newest
 
     @staticmethod

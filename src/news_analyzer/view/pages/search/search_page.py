@@ -14,6 +14,7 @@ import streamlit as st
 from news_analyzer.model import PipelineProgress, SearchRequest, build_datastore_insights, entities_to_display, sentiment_label
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
+from news_analyzer.view.utils import format_swiss_date_time
 
 PERIOD_OPTIONS = ["1h", "6h", "12h", "1d", "3d", "7d"]
 TREND_OPTIONS = ["Trump", "Iran", "Oil", "Gold", "NVDA", "USA"]
@@ -49,14 +50,14 @@ class NewsSearchPage:
             mode = st.radio("Search Mode", options=["Keyword", "Trend"], horizontal=True, key="search_mode")
 
             keyword = ""
-            topic = ""
+            trend = ""
             if mode == "Keyword":
                 keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
             else:
-                if st.session_state.get("search_topic") not in TREND_OPTIONS:
-                    st.session_state["search_topic"] = TREND_OPTIONS[0]
-                topic = st.selectbox("Trend Ticker", options=TREND_OPTIONS, key="search_topic")
-                keyword = topic
+                if st.session_state.get("search_trend") not in TREND_OPTIONS:
+                    st.session_state["search_trend"] = TREND_OPTIONS[0]
+                trend = st.selectbox("Trend Ticker", options=TREND_OPTIONS, key="search_trend")
+                keyword = trend
 
             period_default_index = PERIOD_OPTIONS.index("1d")
             period = st.selectbox(
@@ -91,9 +92,9 @@ class NewsSearchPage:
                 return
 
             request = SearchRequest(
-                mode="keyword",
+                mode="trend" if mode == "Trend" else "keyword",
                 keyword=keyword.strip(),
-                topic=topic.strip().upper(),
+                topic=trend.strip().upper(),
                 period=period,
                 max_results=1000,
                 extract_full_text=extract_full_text,
@@ -128,6 +129,7 @@ class NewsSearchPage:
 
         st.title("Search Analysis")
         st.caption("Results are shown from the latest Firestore reload.")
+        st.caption("Datum/Zeit im UI: Schweiz (Europe/Zurich), Format dd.mm.yyyy und hh:mm.")
 
         articles_found = int(summary.get("articles_found", 0))
         existing_articles = int(summary.get("existing_articles", 0))
@@ -227,14 +229,25 @@ class NewsSearchPage:
 
         st.divider()
         st.markdown("#### Sentiment Trend (Publication Time)")
-        trend_rows = [item.as_dict() for item in insights.trend_points]
+        trend_rows: list[dict[str, Any]] = []
+        for item in insights.trend_points:
+            row = item.as_dict()
+            date_value, time_value = format_swiss_date_time(row.get("published_time", ""))
+            row["published_date_ch"] = date_value
+            row["published_time_ch"] = time_value
+            trend_rows.append(row)
         if trend_rows:
             st.vega_lite_chart(
                 trend_rows,
                 {
                     "mark": {"type": "line", "point": True},
                     "encoding": {
-                        "x": {"field": "published_time", "type": "temporal", "title": "Zeit"},
+                        "x": {
+                            "field": "published_time",
+                            "type": "temporal",
+                            "title": "Zeit (CH)",
+                            "axis": {"format": "%d.%m.%Y %H:%M"},
+                        },
                         "y": {
                             "field": "sentiment_score",
                             "type": "quantitative",
@@ -244,7 +257,8 @@ class NewsSearchPage:
                         "tooltip": [
                             {"field": "title", "type": "nominal", "title": "Title"},
                             {"field": "source", "type": "nominal", "title": "Source"},
-                            {"field": "published_time", "type": "temporal", "title": "Published"},
+                            {"field": "published_date_ch", "type": "nominal", "title": "Datum"},
+                            {"field": "published_time_ch", "type": "nominal", "title": "Zeit (CH)"},
                             {"field": "sentiment_score", "type": "quantitative", "title": "Sentiment"},
                         ],
                     },
@@ -295,7 +309,7 @@ class NewsSearchPage:
     def _render_table_filters_and_data(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            text_filter = st.text_input("Filter Text (Title/Source/Query)", value="").strip().lower()
+            text_filter = st.text_input("Filter Text (Title/Source/Trend)", value="").strip().lower()
         with col_b:
             sentiment_min, sentiment_max = st.slider(
                 "Sentiment Range",
@@ -329,7 +343,7 @@ class NewsSearchPage:
                         str(row.get("title", "")),
                         str(row.get("source", "")),
                         str(row.get("query", "")),
-                        str(row.get("topic", "")),
+                        self._trend_from_record(row),
                         entity_text,
                     ]
                 ).lower()
@@ -342,7 +356,13 @@ class NewsSearchPage:
             {
                 "title": str(row.get("title", "")).strip(),
                 "source": str(row.get("source", "")).strip(),
-                "published_date": str(row.get("published_date", "")).strip(),
+                "date": format_swiss_date_time(
+                    str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+                )[0],
+                "time": format_swiss_date_time(
+                    str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+                )[1],
+                "trend": self._trend_from_record(row),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
                 "sentiment_label": sentiment_label(float(row.get("sentiment_score", 0.0))),
@@ -368,7 +388,7 @@ class NewsSearchPage:
         summary_row = {
             "mode": str(request.get("mode", "")).strip(),
             "keyword": str(request.get("keyword", "")).strip(),
-            "topic": str(request.get("topic", "")).strip(),
+            "trend": str(request.get("topic", "")).strip() or str(request.get("keyword", "")).strip(),
             "period": str(request.get("period", "")).strip(),
             "articles_found": int(summary.get("articles_found", 0)),
             "existing_articles": int(summary.get("existing_articles", 0)),
@@ -480,7 +500,13 @@ class NewsSearchPage:
             {
                 "title": str(row.get("title", "")).strip(),
                 "source": str(row.get("source", "")).strip(),
-                "published_date": str(row.get("published_date", "")).strip(),
+                "date": format_swiss_date_time(
+                    str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+                )[0],
+                "time": format_swiss_date_time(
+                    str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+                )[1],
+                "trend": self._trend_from_record(row),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
                 "sentiment_label": sentiment_label(float(row.get("sentiment_score", 0.0))),
@@ -496,16 +522,28 @@ class NewsSearchPage:
         for key, value in row.items():
             export_row[str(key)] = self._to_export_cell(value)
         export_row["entities_display"] = entities_to_display(row.get("entities", []))
+        export_row["trend"] = self._trend_from_record(row)
+        date_value, time_value = format_swiss_date_time(
+            str(row.get("published_at", "")).strip() or str(row.get("published_date", "")).strip()
+        )
+        export_row["date"] = date_value
+        export_row["time"] = time_value
         return export_row
 
     def _build_export_file_stem(self, request: dict[str, Any]) -> str:
-        mode = str(request.get("mode", "search")).strip().lower()
-        query = str(request.get("keyword", "")).strip() if mode == "keyword" else str(request.get("topic", "")).strip()
+        query = str(request.get("keyword", "")).strip() or str(request.get("topic", "")).strip()
         clean_query = "".join(ch if ch.isalnum() else "_" for ch in query)[:40].strip("_")
         if not clean_query:
             clean_query = "query"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return f"news_analysis_{clean_query}_{timestamp}"
+
+    @staticmethod
+    def _trend_from_record(row: dict[str, Any]) -> str:
+        query = str(row.get("query", "")).strip()
+        if query:
+            return query
+        return str(row.get("topic", "")).strip()
 
     @staticmethod
     def _to_export_cell(value: Any) -> Any:

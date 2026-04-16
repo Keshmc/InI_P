@@ -69,20 +69,20 @@ def build_datastore_insights(records: list[dict[str, Any]], top_n: int = 15) -> 
     """Build reusable insights package from analyzed records."""
     sentiment = build_sentiment_overview(records)
 
-    topic_counter: Counter[str] = Counter()
+    trend_counter: Counter[str] = Counter()
     entity_counter: Counter[str] = Counter()
     publisher_counter: Counter[str] = Counter()
     trend_points: list[TrendPoint] = []
     article_facts: list[dict[str, Any]] = []
     unique_entities_set: set[str] = set()
-    unique_topics_set: set[str] = set()
+    unique_trends_set: set[str] = set()
     unique_publishers_set: set[str] = set()
 
     for row in records:
-        topic = _topic_from_row(row)
-        if topic:
-            topic_counter[topic] += 1
-            unique_topics_set.add(topic)
+        trend = _trend_from_row(row)
+        if trend:
+            trend_counter[trend] += 1
+            unique_trends_set.add(trend)
 
         source = str(row.get("source", "")).strip() or "Unknown"
         publisher_counter[source] += 1
@@ -114,9 +114,10 @@ def build_datastore_insights(records: list[dict[str, Any]], top_n: int = 15) -> 
             {
                 "title": str(row.get("title", "")).strip(),
                 "source": source,
-                "topic": topic,
+                "trend": trend,
                 "query": str(row.get("query", "")).strip(),
                 "published_date": str(row.get("published_date", "")).strip(),
+                "published_at": str(row.get("published_at", "")).strip(),
                 "sentiment_score": round(float(row.get("sentiment_score", 0.0)), 4),
                 "sentiment_magnitude": round(float(row.get("sentiment_magnitude", 0.0)), 4),
                 "sentiment_label": sentiment_label(float(row.get("sentiment_score", 0.0))),
@@ -128,30 +129,30 @@ def build_datastore_insights(records: list[dict[str, Any]], top_n: int = 15) -> 
 
     trend_points.sort(key=lambda item: item.published_time)
 
-    top_topics = [CountMetric(label=label, count=count) for label, count in topic_counter.most_common(top_n)]
+    top_trends = [CountMetric(label=label, count=count) for label, count in trend_counter.most_common(top_n)]
     top_entities = [CountMetric(label=label, count=count) for label, count in entity_counter.most_common(top_n)]
     top_publishers = [CountMetric(label=label, count=count) for label, count in publisher_counter.most_common(top_n)]
 
     return DatastoreInsights(
         sentiment=sentiment,
-        top_topics=top_topics,
+        top_trends=top_trends,
         top_entities=top_entities,
         top_publishers=top_publishers,
         trend_points=trend_points,
         article_facts=article_facts,
         unique_publishers=len(unique_publishers_set),
-        unique_topics=len(unique_topics_set),
+        unique_trends=len(unique_trends_set),
         unique_entities=len(unique_entities_set),
     )
 
 
-def _topic_from_row(row: dict[str, Any]) -> str:
-    topic = str(row.get("topic", "")).strip()
-    if topic:
-        return topic
+def _trend_from_row(row: dict[str, Any]) -> str:
     query = str(row.get("query", "")).strip()
     if query:
         return query
+    topic = str(row.get("topic", "")).strip()
+    if topic:
+        return topic
     return "UNKNOWN"
 
 

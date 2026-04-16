@@ -151,6 +151,8 @@ class NewsPresenter:
 
         if mode == "keyword" and not keyword:
             raise ValueError("Keyword mode requires a non-empty keyword.")
+        if mode == "trend" and not (keyword or topic):
+            raise ValueError("Trend mode requires a non-empty trend keyword.")
         if mode == "topic" and not topic:
             raise ValueError("Topic mode requires a non-empty topic.")
 

@@ -59,11 +59,21 @@ class DatastoreInsights:
     """Aggregate insights package used in Search and Datastore pages."""
 
     sentiment: SentimentOverview
-    top_topics: list[CountMetric] = field(default_factory=list)
+    top_trends: list[CountMetric] = field(default_factory=list)
     top_entities: list[CountMetric] = field(default_factory=list)
     top_publishers: list[CountMetric] = field(default_factory=list)
     trend_points: list[TrendPoint] = field(default_factory=list)
     article_facts: list[dict[str, Any]] = field(default_factory=list)
     unique_publishers: int = 0
-    unique_topics: int = 0
+    unique_trends: int = 0
     unique_entities: int = 0
+
+    @property
+    def top_topics(self) -> list[CountMetric]:
+        """Backward-compatible alias for old UI code."""
+        return self.top_trends
+
+    @property
+    def unique_topics(self) -> int:
+        """Backward-compatible alias for old UI code."""
+        return self.unique_trends
