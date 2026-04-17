@@ -43,7 +43,7 @@ gcp:
 
 long_term_trends:
   enabled: true
-  interval_minutes: 360
+  interval_minutes: 1440
   run_on_startup: true
   period: 1d
   max_results: 300

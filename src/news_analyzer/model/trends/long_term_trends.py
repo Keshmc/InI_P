@@ -168,6 +168,12 @@ class LongTermTrendScheduler:
             "tickers": list(self.config.tickers),
         }
 
+    def run_once(self) -> dict[str, Any]:
+        """Run one collection cycle synchronously and return the result dict."""
+        self._run_once()
+        with self._state_lock:
+            return {"last_run_at": self.last_run_at, "result": dict(self.last_result), "error": self.last_error}
+
     def _loop(self) -> None:
         if self.config.run_on_startup and not self._stop_event.is_set():
             self._run_once()

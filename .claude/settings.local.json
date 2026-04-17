@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud run *)",
+      "Bash(powershell.exe -Command \"gcloud run jobs list --region=europe-west1 --project=financial-news-analyzer-489418 2>&1\")",
+      "Bash(powershell.exe -Command \"gcloud scheduler jobs list --location=europe-west1 --project=financial-news-analyzer-489418 2>&1\")",
+      "Bash(powershell.exe -Command \"gcloud run services describe news-analyzer --region=europe-west1 --project=financial-news-analyzer-489418 --format='value\\(status.url,spec.template.spec.containers[0].env\\)' 2>&1\")"
+    ]
+  }
+}
