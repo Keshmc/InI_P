@@ -1,0 +1,28 @@
+# Service account keys and secrets — never commit these
+secrets/
+*.json.key
+*-credentials.json
+*-service-account.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.env.*
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
