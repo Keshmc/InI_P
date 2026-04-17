@@ -1,76 +1,145 @@
-# Long-Term Scheduler
+# Long-Term Trend Collection
 
-This document explains how automatic long-term ticker ingestion works.
+This document explains how automatic long-term ticker ingestion works, both locally and in Google Cloud.
 
 ## Purpose
 
-The long-term scheduler performs recurring background searches for a configured set of tickers and stores new articles in Datastore.
+The long-term collection pipeline performs recurring searches for a configured set of tickers and stores new articles in Firestore. This enables:
 
-This enables:
+- repeated collection over time without manual intervention
+- long-term monitoring across the UI (growth charts, per-ticker sentiment)
+- historical article accumulation for trend analysis
 
-- repeated collection over time
-- long-term monitoring in the UI
-- article growth charts based on saved records
+## Architecture
+
+### Production (Google Cloud)
+
+In production the web app and the ingestion job are decoupled:
+
+```
+Cloud Scheduler (daily 06:00 UTC)
+  └─► Cloud Run Job  (run_trends_job.py — one-shot, exits when done)
+        └─► Firestore (stores new articles)
+
+Browser
+  └─► Cloud Run  (Streamlit web app, scheduler disabled)
+        └─► Firestore (reads stored articles)
+```
+
+The web app runs with `NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false`. The Cloud Run Job uses the same Docker image but a different entry point (`run_trends_job.py`).
+
+### Local Development
+
+Locally the app can run the scheduler as a background thread within the Streamlit process. This is controlled by `long_term_trends.enabled` in `config.yaml` and is useful for development but unreliable on Cloud Run (scale-to-zero kills the thread).
 
 ## Configuration
 
-The scheduler is configured in `config.yaml` under `long_term_trends`.
+All settings live in `config.yaml` under `long_term_trends`:
 
-Relevant fields:
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | bool | Enables or disables the in-process background scheduler (local only) |
+| `interval_minutes` | int | Run interval in minutes for the local scheduler (default: 1440 = 24h) |
+| `run_on_startup` | bool | Run one cycle immediately when the local app process starts |
+| `period` | string | News search window per collection run (e.g. `1d`, `7d`) |
+| `max_results` | int | Max articles fetched per ticker per run (default: 300) |
+| `extract_full_text` | bool | Download and parse full article text before analysis |
+| `include_entities` | bool | Run named entity extraction per article |
+| `tickers` | list | Search terms to track (keywords, company names, symbols) |
 
-- `enabled`
-  - turns the scheduler on or off
-- `interval_minutes`
-  - run interval in minutes
-- `run_on_startup`
-  - if enabled, the scheduler starts one collection cycle when the app process starts
-- `period`
-  - provider period passed to the news loader
-- `max_results`
-  - requested result count per ticker
-- `extract_full_text`
-  - enables article extraction before analysis
-- `include_entities`
-  - enables entity extraction
-- `tickers`
-  - list of tracked long-term search terms
+Current defaults:
 
-## Current Default Behavior
+```yaml
+long_term_trends:
+  enabled: true
+  interval_minutes: 1440
+  run_on_startup: true
+  period: 1d
+  max_results: 300
+  extract_full_text: true
+  include_entities: true
+  tickers:
+    - Trump
+    - Iran
+    - Oil
+    - Gold
+    - NVDA
+    - Tesla
+    - MSFT
+    - Apple
+    - USA
+```
 
-Current project defaults:
+## Cloud Run Job
 
-- interval: every `360` minutes
-- run on startup: `true`
-- max results per ticker: `300`
+The entry point for scheduled collection is `src/news_analyzer/run_trends_job.py`.
 
-Configured tickers:
+What it does:
 
-- `Trump`
-- `Iran`
-- `Oil`
-- `Gold`
-- `NVDA`
-- `Tesla`
-- `MSFT`
-- `Apple`
-- `USA`
+1. Loads `config.yaml` via the same `build_presenter()` used by the web app
+2. Instantiates the long-term trend scheduler
+3. Calls `scheduler.run_once()` — one full collection cycle, synchronous
+4. Logs the outcome (articles fetched, saved, errors)
+5. Exits with code `1` if an error occurred (Cloud Run Job marks the execution as failed)
 
-## Lifecycle
+The job is deployed separately from the web app:
 
-The scheduler is initialized in the Streamlit view layer and behaves as a process-wide singleton.
+```bash
+gcloud run jobs deploy news-analyzer-trends-job \
+  --image gcr.io/financial-news-analyzer-489418/news-analyzer \
+  --region europe-west1 \
+  --memory 2Gi \
+  --cpu 2 \
+  --task-timeout 3600 \
+  --command python \
+  --args src/news_analyzer/run_trends_job.py
+```
 
-When enabled:
+Run manually at any time:
 
-1. the app starts the scheduler thread
-2. one cycle runs immediately if `run_on_startup` is enabled
-3. the next cycle waits for the configured interval
-4. every cycle requests news for each configured ticker
-5. new records are analyzed and saved to Datastore
-6. status information is exposed to the sidebar and the `Long-Term Trends` page
+```bash
+gcloud run jobs execute news-analyzer-trends-job --region=europe-west1
+```
 
-## Stored Data Used By The Dashboard
+## Cloud Scheduler
 
-The `Long-Term Trends` page identifies matching records using these saved fields:
+Cloud Scheduler triggers the Cloud Run Job via an authenticated HTTP request.
+
+The deploy script (`deploy-to-gcp.ps1`) creates the scheduler automatically. To create it manually:
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe financial-news-analyzer-489418 --format="value(projectNumber)")
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+# Grant the scheduler permission to trigger the job
+gcloud run jobs add-iam-policy-binding news-analyzer-trends-job \
+  --region europe-west1 \
+  --member "serviceAccount:${COMPUTE_SA}" \
+  --role roles/run.invoker
+
+# Create the daily trigger
+gcloud scheduler jobs create http news-analyzer-trends-daily \
+  --location europe-west1 \
+  --schedule "0 6 * * *" \
+  --uri "https://europe-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/financial-news-analyzer-489418/jobs/news-analyzer-trends-job:run" \
+  --message-body "{}" \
+  --oidc-service-account-email "${COMPUTE_SA}"
+```
+
+## One Collection Cycle
+
+Each run (whether local or via Cloud Run Job) follows the same steps for every configured ticker:
+
+1. Search Google News for the ticker using the configured `period` and `max_results`
+2. Check which articles are already stored in Firestore (deduplication)
+3. Extract full text for new articles (if `extract_full_text: true`)
+4. Run sentiment and entity analysis on new articles
+5. Save new articles to Firestore
+6. Return totals: fetched / existing / new / saved / loaded
+
+## How The Dashboard Identifies Articles
+
+The Long-Term Trends page identifies records belonging to a ticker by checking these saved fields (in order):
 
 - `query`
 - `topic`
@@ -78,42 +147,31 @@ The `Long-Term Trends` page identifies matching records using these saved fields
 - `symbol`
 - legacy values inside `raw_article_json`
 
-For chart timestamps, the page prefers:
+Matching is case-insensitive.
+
+For chart timestamps, the page uses this fallback chain:
 
 1. `ingested_at`
 2. `analysis_timestamp`
 3. `published_at`
 4. `published_date`
 
-This allows the dashboard to still show growth even when the original article timestamp is incomplete.
+## Sidebar Status
 
-## Status Fields
+The sidebar shows different text depending on the environment:
 
-The scheduler exposes status information including:
+| Situation | Sidebar text |
+|-----------|-------------|
+| In-process scheduler running (local) | `Collector: running (in-process)` + schedule + last run |
+| In-process scheduler disabled (production) | `Collector: daily (Cloud Scheduler)` |
 
-- `enabled`
-- `running`
-- `last_run_at`
-- `last_result`
-- `last_error`
-- `interval_minutes`
-- `tickers`
+The "Last Data Collection" metric on the Long-Term Trends page is derived from the most recent `ingested_at` timestamp across all stored records — not from in-memory scheduler state. This means it correctly reflects the last Cloud Run Job execution even when the web app has no scheduler running.
 
-The latest run summary typically includes totals such as:
+## Provider Notes
 
-- `fetched`
-- `existing`
-- `new`
-- `saved`
-- `loaded`
+The underlying `gnews` library has known behavior at high result counts:
 
-## Provider Caveat For Large Result Sets
+- searches above `100` results may not apply the time-range filter as strictly as smaller searches
+- for strict period handling, consider reducing `max_results` toward `100`
 
-The application can request up to `300` results per ticker, but the underlying `gnews` provider has important caveats:
-
-- searches above `100` results may not apply time-range handling as strictly as smaller searches
-- provider behavior for large result sets can differ from standard `<=100` searches
-
-The application suppresses noisy provider warnings in the UI/runtime output, but the provider limitation still exists conceptually.
-
-If strict period handling becomes more important than volume, consider reducing `max_results` back toward `100`.
+The application suppresses noisy provider warnings in output but the limitation still applies.

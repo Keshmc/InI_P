@@ -1,242 +1,280 @@
 # News Analyzer
 
-Streamlit-based news analysis application with Datastore persistence, sentiment analysis, publisher monitoring, and long-term ticker tracking.
+Streamlit-based financial news analysis application with Google Cloud Firestore persistence, sentiment analysis, publisher monitoring, and long-term ticker tracking.
 
 ## What The App Does
 
-- searches recent news by keyword or trend
-- analyzes sentiment and entities for saved articles
-- stores processed articles in Google Cloud Datastore / Firestore Datastore mode
-- explores the saved article library with filters
+- searches recent news by keyword
+- analyzes sentiment and named entities for each article
+- stores processed articles in Google Cloud Firestore (Datastore mode)
+- explores the saved article library with detailed filters
 - summarizes sentiment by publisher
-- tracks configured long-term tickers over time
-- exports page results as `CSV (ZIP)`, `JSON`, or `Excel`
+- tracks configured long-term tickers over time via Cloud Scheduler
+- exports page results as CSV (ZIP), JSON, or Excel
 
 ## Main Pages
 
-- `News Search`
-  - search by keyword or trending topic
-  - analyze recent coverage
-  - review sentiment, entities, trend chart, and result table
-  - export the current analysis
-- `Article Library`
-  - `Overview` for the saved collection
-  - `Search` for filtered Datastore queries
-  - filters include companies, industry sector, sentiment threshold, and date range
-  - export overview data or filtered result sets
-- `Publisher Sentiment`
-  - summarizes how publishers tend to write across saved records
-  - includes publisher activity and sentiment rankings
-  - export summary tables
-- `Long-Term Trends`
-  - shows active scheduler tickers
-  - shows scheduler status and latest run details
-  - visualizes saved long-term article growth over time
-  - visualizes daily ticker breakdown
-  - export long-term monitoring data
+### News Search
+- search by keyword
+- analyze recent coverage for a selected time window (1h–7d)
+- review sentiment score, distribution chart, trend chart, top entities, and full results table
+- new articles are saved automatically before the results view loads
+- export the current analysis
 
-More page details are documented in `docs/ui-pages.md`.
+### Article Library
+- **Overview** — high-level metrics, sentiment overview, top trends, entities, publishers, article table
+- **Search** — filtered Datastore queries by company, sector, sentiment range, and publication date range; includes sentiment-over-time chart
+- **Long-Term Analysis** — per-ticker deep-dive with sentiment-over-time chart, trend and entity breakdown, article table
+- export any mode as CSV, JSON, or Excel
+
+### Publisher Sentiment
+- aggregates how publishers tend to write across the saved article collection
+- publisher activity rankings, sentiment breakdown, extreme publishers
+- export summary tables
+
+### Long-Term Trends
+- collector status (last data collection, search window, max articles per ticker)
+- configured tickers table with per-ticker article counts and average sentiment
+- cumulative article growth chart over time
+- daily article count breakdown by ticker
+- recent articles table
+- export monitoring data
+
+More detail in `docs/ui-pages.md`.
 
 ## Project Structure
 
 ```text
-config.yaml
-src/news_analyzer/app.py
-src/news_analyzer/model/
-src/news_analyzer/presenter/
-src/news_analyzer/view/
+.gitignore                        # Excludes secrets/ from git
+config.yaml                       # Runtime configuration
+Dockerfile                        # Python 3.12 container for Cloud Run
+requirements.txt                  # Python dependencies
+deploy-to-gcp.ps1                 # Full GCP deployment script (PowerShell)
+
+secrets/                          # Local credentials — never committed
+  *.json                          # Service account key (local dev only)
+
+src/news_analyzer/
+  app.py                          # Main Streamlit entry point
+  run_trends_job.py               # Cloud Run Job entry point (one-shot ingestion)
+  model/                          # Business logic and data persistence
+    model.py                      # NewsAnalysisPipeline orchestration
+    analysis/                     # Sentiment and entity extraction
+    rss_feed/                     # Google News sourcing and full-text extraction
+    datastore/                    # Firestore persistence and query
+    insights/                     # Data aggregation for UI
+    publisher_sentiment/          # Publisher-level analysis
+    trends/                       # Long-term ticker scheduler
+  presenter/                      # View-to-model bridge (NewsPresenter)
+  view/                           # Streamlit UI
+    pages/search/                 # News Search page
+    pages/datastore/              # Article Library page
+    pages/publishers/             # Publisher Sentiment page
+    pages/long_term/              # Long-Term Trends page
+    pages/general/                # Shared sidebar component
+    utils/                        # Datetime formatting, export tools
+
 docs/
+  ui-pages.md                     # Detailed UI page descriptions
+  long-term-scheduler.md          # Scheduler and Cloud Run Job documentation
 ```
 
-## Running The App
+## Running The App Locally
 
-1. Create or activate a Python environment with the required project dependencies.
-2. Ensure Google credentials are available.
+1. Create or activate a Python environment and install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Place a valid service account key in `secrets/` (see [Credentials](#credentials)).
+
 3. Start Streamlit:
 
 ```bash
 streamlit run src/news_analyzer/app.py
 ```
 
+## Credentials
+
+### Local Development
+
+The app resolves credentials in this order:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+2. `datastore.credentials_path` from `config.yaml`
+3. Auto-discovery: most recent `.json` file in `secrets/`
+
+Place your service account JSON in `secrets/`. The folder is excluded from git via `.gitignore` and from the Docker image via `.dockerignore`.
+
+To create a new key:
+
+```bash
+gcloud iam service-accounts keys create secrets/<project-id>-new.json \
+  --iam-account=<service-account>@<project-id>.iam.gserviceaccount.com
+```
+
+### Cloud Run (Production)
+
+Cloud Run containers receive an attached service account identity automatically (Application Default Credentials). No JSON key file is needed or should be shipped to production.
+
 ## Configuration
 
-The application reads its runtime configuration from `config.yaml`.
+The application reads runtime configuration from `config.yaml`.
 
-Important sections:
+| Section | Key fields |
+|---------|-----------|
+| `rss` | `language`, `country`, `period`, `max_results` |
+| `extractor` | `request_timeout_seconds`, `max_chars` |
+| `analyzer` | `max_chars`, `fallback_to_mock_on_error` |
+| `datastore` | `project_id`, `database_id`, `kind`, `credentials_path` |
+| `long_term_trends` | `enabled`, `interval_minutes`, `period`, `max_results`, `tickers` |
 
-- `rss`
-  - controls language, country, default period, and default provider result size
-- `extractor`
-  - controls article extraction timeout and max text length
-- `datastore`
-  - contains project, database, collection kind, and credentials path
-- `long_term_trends`
-  - configures automatic long-term ingestion
+Current long-term trends settings:
 
-Current long-term scheduler settings:
-
-- `enabled: true`
-- `interval_minutes: 360`
-- `run_on_startup: true`
-- `period: 1d`
-- `max_results: 300`
-- tickers:
-  - `Trump`
-  - `Iran`
-  - `Oil`
-  - `Gold`
-  - `NVDA`
-  - `Tesla`
-  - `MSFT`
-  - `Apple`
-  - `USA`
+```yaml
+long_term_trends:
+  enabled: true
+  interval_minutes: 1440      # 24 hours (used locally only; Cloud = Cloud Scheduler)
+  run_on_startup: true
+  period: 1d                  # Search window per collection run
+  max_results: 300            # Max articles fetched per ticker per run
+  tickers:
+    - Trump
+    - Iran
+    - Oil
+    - Gold
+    - NVDA
+    - Tesla
+    - MSFT
+    - Apple
+    - USA
+```
 
 Detailed scheduler behavior is documented in `docs/long-term-scheduler.md`.
 
 ## Deploy To Google Cloud
 
-The application is best deployed as a public web app on `Cloud Run`.
+The PowerShell script `deploy-to-gcp.ps1` automates the full deployment in one step:
 
-Why `Cloud Run` fits this project:
+```powershell
+.\deploy-to-gcp.ps1
+```
 
-- it exposes the Streamlit UI over HTTPS
-- it works well with Python containers
-- it can use a Google Cloud service account instead of a local JSON key file
+It performs:
+1. Enables required GCP APIs (Cloud Run, Cloud Build, Container Registry, Cloud Scheduler)
+2. Builds and pushes the Docker image via Cloud Build
+3. Deploys the Streamlit web app to Cloud Run (`NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false`)
+4. Deploys a Cloud Run Job for one-shot trend ingestion (`run_trends_job.py`)
+5. Creates or updates a Cloud Scheduler trigger (daily at 06:00 UTC)
 
-Important deployment note:
+### Architecture in Production
 
-- the built-in long-term background scheduler is process-local
-- on `Cloud Run`, instances can scale down, restart, or scale out
-- for reliable scheduled ingestion, prefer a separate `Cloud Run Job` plus `Cloud Scheduler`
-- for the web app service itself, disable the in-process scheduler with:
-  - `NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false`
+```
+Browser
+  └─► Cloud Run (web app, scheduler disabled)
+        └─► Firestore
 
-### 1. Prepare Google Cloud
+Cloud Scheduler (daily 06:00 UTC)
+  └─► Cloud Run Job (run_trends_job.py, one-shot)
+        └─► Firestore
+```
 
-Make sure the target project exists and the required services are enabled:
+The web app and the ingestion job use the same Docker image but different entry points.
+
+### Manual Deployment Commands
+
+Prepare the project:
 
 ```bash
 gcloud config set project financial-news-analyzer-489418
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com datastore.googleapis.com language.googleapis.com
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  cloudscheduler.googleapis.com language.googleapis.com datastore.googleapis.com
 ```
 
-Create a dedicated runtime service account for the web app:
-
-```bash
-gcloud iam service-accounts create news-analyzer-run \
-  --display-name="News Analyzer Cloud Run"
-```
-
-Grant the service account access to Datastore mode data:
-
-```bash
-gcloud projects add-iam-policy-binding financial-news-analyzer-489418 \
-  --member="serviceAccount:news-analyzer-run@financial-news-analyzer-489418.iam.gserviceaccount.com" \
-  --role="roles/datastore.user"
-```
-
-If you want the Cloud NLP analysis to run in Google Cloud instead of falling back locally, also make sure the Natural Language API is enabled for the same project.
-
-### 2. Deploy The Web App
-
-This repository already contains:
-
-- `Dockerfile`
-- `.dockerignore`
-- `requirements.txt`
-
-Deploy from the repository root:
+Deploy the web app:
 
 ```bash
 gcloud run deploy news-analyzer \
   --source . \
   --region europe-west1 \
   --allow-unauthenticated \
-  --service-account news-analyzer-run@financial-news-analyzer-489418.iam.gserviceaccount.com \
   --set-env-vars NEWS_ANALYZER_LONG_TERM_TRENDS_ENABLED=false
 ```
 
-After a successful deployment, `gcloud` prints the public `https://...run.app` URL.
+Deploy the ingestion job:
 
-### 3. Credentials On Cloud Run
+```bash
+gcloud run jobs deploy news-analyzer-trends-job \
+  --image gcr.io/financial-news-analyzer-489418/news-analyzer \
+  --region europe-west1 \
+  --command python \
+  --args src/news_analyzer/run_trends_job.py
+```
 
-Do not ship the local JSON key from `secrets/` into production.
+Run the job manually:
 
-- local development can still use `config.yaml` or `GOOGLE_APPLICATION_CREDENTIALS`
-- `Cloud Run` should use its attached service account via Application Default Credentials
-- the container build excludes `secrets/`
+```bash
+gcloud run jobs execute news-analyzer-trends-job --region=europe-west1
+```
 
-### 4. Recommended Next Step For Long-Term Collection
+View logs:
 
-If you want the long-term ticker collection to run reliably in Google Cloud:
-
-1. keep the web UI on `Cloud Run`
-2. move scheduled ingestion into a `Cloud Run Job` or separate worker service
-3. trigger it with `Cloud Scheduler`
+```bash
+gcloud run logs read news-analyzer --region=europe-west1 --limit=50
+gcloud run jobs logs read news-analyzer-trends-job --region=europe-west1 --limit=50
+```
 
 ## Datastore Query Support
 
-The application supports filtered Datastore queries from the `Article Library` search mode.
+The Article Library search mode supports filtered Firestore queries:
 
-Supported filter categories include:
+| Filter | Description |
+|--------|-------------|
+| Company / keyword | One or more comma-separated names |
+| Industry sector | Standard sector label (Technology, Energy, …) |
+| Sentiment range | Min and max score (−1.0 to +1.0) |
+| Publication date range | From/to date filter |
+| Result limit | 50 – 10,000 rows |
 
-- one or more company names
-- industry sector
-- minimum sentiment score
-- publication date range
-- result limit
+## Data Limits
 
-Current UI/data limits:
-
-- `News Search`: up to `300` requested provider results
-- `Article Library`: scans and displays up to the latest `10,000` saved records
-- `Publisher Sentiment`: currently summarizes up to `5,000` saved records
-- `Long-Term Trends`: scans up to the latest `10,000` saved records for configured tickers
+| Page / Mode | Scan limit |
+|-------------|------------|
+| News Search | up to 300 provider results per search |
+| Article Library (all modes) | up to 30,000 saved records |
+| Publisher Sentiment | up to 30,000 saved records |
+| Long-Term Trends | up to 30,000 saved records |
 
 ## Export
 
-Each main analysis page contains a compact export section.
+Each main page contains an export section supporting:
 
-Supported formats:
-
-- `CSV (ZIP)`
-  - each logical table is exported as its own CSV file inside one ZIP archive
-- `JSON`
-  - the current page payload is exported as structured JSON
-- `Excel`
-  - the current page payload is exported as a multi-sheet workbook
-
-Excel export depends on `pandas` and `openpyxl`. If they are unavailable, the UI disables the Excel button and shows a short note.
-
-## Scheduler Notes
-
-The long-term scheduler:
-
-- starts automatically when enabled
-- runs once on startup if `run_on_startup` is enabled
-- runs again every configured interval
-- stores new articles in Datastore
-- exposes last run status in the sidebar and on the `Long-Term Trends` page
-
-Important provider note:
-
-- the underlying `gnews` library can behave differently for searches above `100` results
-- for very large result sets, provider-side time filtering may become less strict than for smaller searches
+| Format | Notes |
+|--------|-------|
+| CSV (ZIP) | Each table exported as a separate CSV file inside one ZIP archive |
+| JSON | Full page payload as structured JSON |
+| Excel | Multi-sheet workbook (requires `pandas` + `openpyxl`) |
 
 ## Timestamps
 
-The UI displays timestamps in `Europe/Zurich`.
+All timestamps in the UI are displayed in `Europe/Zurich`.
 
-Where possible, the application prefers:
+Timestamp field priority (most to least preferred):
 
 1. `published_at`
 2. `published_date`
 3. `analysis_timestamp`
 4. `ingested_at`
 
-The `Long-Term Trends` page uses saved Datastore records and builds its charts from ingestion or fallback timestamps if a published timestamp is missing.
+## Security Notes
+
+- `secrets/` is excluded from git (`.gitignore`) and Docker builds (`.dockerignore`)
+- Never commit service account JSON files
+- Cloud Run uses Application Default Credentials — no key file needed in production
+- Rotate service account keys immediately if accidentally exposed
 
 ## Additional Documentation
 
-- `docs/ui-pages.md`
-- `docs/long-term-scheduler.md`
+- `docs/ui-pages.md` — detailed page descriptions
+- `docs/long-term-scheduler.md` — scheduler, Cloud Run Job, and Cloud Scheduler setup
