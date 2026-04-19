@@ -68,7 +68,8 @@ if ($ExistingScheduler) {
         --schedule $SchedulerSchedule `
         --uri $JobUri `
         --message-body "{}" `
-        --oidc-service-account-email $ComputeSA `
+        --oauth-service-account-email $ComputeSA `
+        --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" `
         --quiet
 } else {
     Write-Host "Creating new scheduler job..." -ForegroundColor Cyan
@@ -77,7 +78,8 @@ if ($ExistingScheduler) {
         --schedule $SchedulerSchedule `
         --uri $JobUri `
         --message-body "{}" `
-        --oidc-service-account-email $ComputeSA `
+        --oauth-service-account-email $ComputeSA `
+        --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" `
         --quiet
 }
 

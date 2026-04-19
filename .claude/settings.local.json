@@ -13,7 +13,8 @@
       "Bash(\"/c/Users/junhe/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud\" logging read \"resource.type=cloudscheduler_job AND resource.labels.job_id=news-analyzer-trends-daily\" --limit=10)",
       "Bash(python3 -m gcloud logging read)",
       "Bash(python -m gcloud)",
-      "Bash(conda run *)"
+      "Bash(conda run *)",
+      "Bash(git log *)"
     ]
   }
 }
