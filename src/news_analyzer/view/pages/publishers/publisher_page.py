@@ -7,8 +7,19 @@ from typing import Any
 import streamlit as st
 
 from news_analyzer.presenter import NewsPresenter
+from news_analyzer.view.pages.general.topbar import (
+    render_empty_state,
+    render_loading_card_html,
+    render_page_header,
+    render_section_heading,
+)
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads
+from news_analyzer.view.utils import (
+    build_export_file_stem,
+    format_swiss_date_time,
+    render_export_downloads,
+    render_sentiment_donut,
+)
 
 
 class PublisherPage:
@@ -18,23 +29,33 @@ class PublisherPage:
     _SUMMARY_MESSAGE_KEY = "publisher_sentiment_summary_message"
     _SUMMARY_OK_KEY = "publisher_sentiment_summary_ok"
 
-    _DATASTORE_LIMIT = 5000
-    _SUMMARY_MATCH_LIMIT = 5000
+    _DATASTORE_LIMIT = 50000
+    _SUMMARY_MATCH_LIMIT = 50000
 
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
 
     def render(self) -> None:
-        form_col, spacer_col = st.columns([2.4, 1.6])
-        del spacer_col
+        render_page_header(
+            eyebrow="Editorial tone",
+            title="Publisher Sentiment",
+            subtitle="How publishers tend to write across your saved coverage — each is summarized by the average sentiment of its articles.",
+            meta="Timestamps in Europe/Zurich",
+        )
 
-        with form_col:
-            st.title("Publisher Sentiment")
-            st.caption("See how publishers tend to write across the saved article collection.")
-            st.caption("Each publisher is summarized by its average article sentiment.")
-            summary_reload = st.button("Refresh summary", type="primary", width="stretch")
-            if summary_reload or self._SUMMARY_PAYLOAD_KEY not in st.session_state:
+        if self._SUMMARY_PAYLOAD_KEY not in st.session_state:
+            loading_zone = st.empty()
+            loading_zone.markdown(
+                render_loading_card_html(
+                    title="Loading publisher data…",
+                    subtitle="Aggregating saved articles by publisher and computing sentiment.",
+                ),
+                unsafe_allow_html=True,
+            )
+            try:
                 self._load_summary_payload()
+            finally:
+                loading_zone.empty()
 
         self._render_summary_mode()
 
@@ -48,12 +69,21 @@ class PublisherPage:
                 st.error(message)
 
         if not isinstance(payload, dict):
-            st.info("No publisher data has been loaded yet.")
+            render_empty_state(
+                title="Publisher data not loaded",
+                message="The publisher summary couldn't be retrieved. Try reloading the page.",
+                icon="📭",
+            )
             return
 
         matches = payload.get("matches", [])
         if not matches:
-            st.info("No publisher data is available yet.")
+            render_empty_state(
+                title="No publishers tracked yet",
+                message="No saved articles have a publisher attached yet.",
+                icon="📭",
+                hint="Run a News Search first — saved articles power this view.",
+            )
             return
 
         total_publishers = int(payload.get("total_publishers", 0))
@@ -63,8 +93,9 @@ class PublisherPage:
         most_active = self._resolve_most_active_publisher(matches)
 
         st.divider()
+        render_section_heading("At a glance")
         metric_cols = st.columns(5)
-        metric_cols[0].metric("Stored Articles", str(record_count))
+        metric_cols[0].metric("Stored articles", str(record_count))
         metric_cols[1].metric("Publishers", str(total_publishers))
         metric_cols[2].metric("Positive", str(positive_count))
         metric_cols[3].metric("Neutral", str(neutral_count))
@@ -72,13 +103,13 @@ class PublisherPage:
 
         insight_col, meter_col = st.columns([1.2, 2.3])
         with insight_col:
-            st.metric("Average Publisher Score", f"{average_score:+.3f}")
-            st.metric("Most Active Publisher", most_active)
+            st.metric("Average publisher score", f"{average_score:+.3f}")
+            st.metric("Most active publisher", most_active)
         with meter_col:
             render_sentiment_meter(average_score)
 
         st.divider()
-        st.markdown("#### Publisher Sentiment Mix")
+        render_section_heading("Sentiment Distribution")
         distribution_rows = [
             {"label": "Positive", "count": positive_count},
             {"label": "Neutral", "count": neutral_count},
@@ -86,28 +117,10 @@ class PublisherPage:
         ]
         chart_col, table_col = st.columns([2.4, 1.2])
         with chart_col:
-            st.vega_lite_chart(
+            render_sentiment_donut(
                 distribution_rows,
-                {
-                    "mark": {"type": "arc", "innerRadius": 20},
-                    "encoding": {
-                        "theta": {"field": "count", "type": "quantitative"},
-                        "color": {
-                            "field": "label",
-                            "type": "nominal",
-                            "scale": {
-                                "domain": ["Positive", "Neutral", "Negative"],
-                                "range": ["#1e8449", "#f4d03f", "#c0392b"],
-                            },
-                            "legend": {"title": "Label"},
-                        },
-                        "tooltip": [
-                            {"field": "label", "type": "nominal", "title": "Label"},
-                            {"field": "count", "type": "quantitative", "title": "Publishers"},
-                        ],
-                    },
-                },
-                width="stretch",
+                legend_title="Publishers",
+                empty_message="No publisher sentiment data yet.",
             )
         with table_col:
             st.dataframe(
@@ -117,7 +130,10 @@ class PublisherPage:
             )
 
         st.divider()
-        st.markdown("#### Most Active Publishers")
+        render_section_heading(
+            "Most Active Publishers",
+            "Top 15 publishers ranked by number of saved articles.",
+        )
         top_activity_rows = sorted(
             self._build_match_rows(matches),
             key=lambda row: int(row.get("articles", 0)),
@@ -150,10 +166,9 @@ class PublisherPage:
                 width="stretch",
             )
         else:
-            st.info("No publisher ranking is available yet.")
+            st.info("No publisher ranking is available yet.", icon="📊")
 
         st.divider()
-        st.markdown("#### Publishers With Strongest Sentiment")
         positive_rows = sorted(
             self._build_match_rows(matches),
             key=lambda row: float(row.get("avg_score", 0.0)),
@@ -165,19 +180,28 @@ class PublisherPage:
         )[:10]
         col_positive, col_negative = st.columns(2)
         with col_positive:
-            st.caption("Most positive")
+            render_section_heading(
+                "Most Positive Publishers",
+                "Top 10 publishers with the highest average sentiment score.",
+            )
             st.dataframe(positive_rows, width="stretch", hide_index=True)
         with col_negative:
-            st.caption("Most negative")
+            render_section_heading(
+                "Most Negative Publishers",
+                "Top 10 publishers with the lowest average sentiment score.",
+            )
             st.dataframe(negative_rows, width="stretch", hide_index=True)
 
         st.divider()
-        st.markdown("#### All Publishers")
+        render_section_heading(
+            "All Publishers",
+            "Complete list of saved publishers with article counts and average sentiment.",
+        )
         all_rows = self._build_match_rows(matches)
         st.dataframe(all_rows, width="stretch", hide_index=True)
 
         st.divider()
-        st.markdown("#### Export")
+        render_section_heading("Export")
         render_export_downloads(
             sections=self._build_export_sections(
                 matches=matches,

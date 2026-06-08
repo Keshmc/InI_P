@@ -11,8 +11,20 @@ import streamlit as st
 from news_analyzer.model import DatastoreInsights, DatastoreQuery, build_datastore_insights
 from news_analyzer.model.trends import DEFAULT_LONG_TERM_TICKERS
 from news_analyzer.presenter import NewsPresenter
+from news_analyzer.view.pages.general.topbar import (
+    render_empty_state,
+    render_loading_card_html,
+    render_page_header,
+    render_search_panel_header,
+    render_section_heading,
+)
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads
+from news_analyzer.view.utils import (
+    build_export_file_stem,
+    format_swiss_date_time,
+    render_export_downloads,
+    render_sentiment_donut,
+)
 
 
 class DataStorePage:
@@ -32,8 +44,6 @@ class DataStorePage:
         "Utilities",
     ]
 
-    _MODE_KEY = "article_library_mode"
-
     _OVERVIEW_STATE_KEY = "article_library_overview_payload"
     _OVERVIEW_MESSAGE_KEY = "article_library_overview_message"
     _OVERVIEW_OK_KEY = "article_library_overview_ok"
@@ -42,48 +52,46 @@ class DataStorePage:
     _SEARCH_MESSAGE_KEY = "article_library_search_message"
     _SEARCH_OK_KEY = "article_library_search_ok"
 
-    _LIMIT = 10000
+    _LIMIT = 50000
 
     def __init__(self, presenter: NewsPresenter) -> None:
         self.presenter = presenter
 
     def render(self) -> None:
-        st.title("Article Library")
-        st.caption("Browse the saved article collection or search it with detailed filters.")
-        st.caption("All timestamps are shown in Europe/Zurich.")
-
-        if st.session_state.get(self._MODE_KEY) not in {"Overview", "Search", "Long-Term Analysis"}:
-            st.session_state[self._MODE_KEY] = "Overview"
-
-        mode = st.radio(
-            "View Mode",
-            options=["Overview", "Search", "Long-Term Analysis"],
-            horizontal=True,
-            key=self._MODE_KEY,
+        render_page_header(
+            eyebrow="Collection",
+            title="Article Library",
+            subtitle="Browse, search, and analyze your saved article collection.",
+            meta="Timestamps in Europe/Zurich",
         )
 
-        if mode == "Overview":
+        tab_overview, tab_search, tab_long_term = st.tabs(
+            ["Overview", "Search", "Long-Term Ticker"]
+        )
+
+        with tab_overview:
             self._render_overview_mode()
-            return
 
-        if mode == "Search":
+        with tab_search:
             self._render_search_mode()
-            return
 
-        self._render_long_term_analysis_mode()
+        with tab_long_term:
+            self._render_long_term_analysis_mode()
 
     def _render_overview_mode(self) -> None:
-        refresh_col, info_col = st.columns([1, 3])
-        with refresh_col:
-            refresh_clicked = st.button("Refresh library", width="stretch")
-        with info_col:
-            st.caption(
-                f"The library loads automatically (up to {self._LIMIT} articles). "
-                "Use refresh to fetch the newest saved records."
+        if self._OVERVIEW_STATE_KEY not in st.session_state:
+            loading_zone = st.empty()
+            loading_zone.markdown(
+                render_loading_card_html(
+                    title="Loading your library…",
+                    subtitle="Pulling saved articles from the datastore — this may take a few seconds.",
+                ),
+                unsafe_allow_html=True,
             )
-
-        if refresh_clicked:
-            self._load_overview_payload(force_reload=True)
+            try:
+                self._load_overview_payload(force_reload=False)
+            finally:
+                loading_zone.empty()
         else:
             self._load_overview_payload(force_reload=False)
 
@@ -95,18 +103,24 @@ class DataStorePage:
 
         records = payload.get("records", []) if isinstance(payload, dict) else []
         if not records:
-            st.info("No saved articles are available yet.")
+            render_empty_state(
+                title="Your library is empty",
+                message="No saved articles yet. Start by running a search on the News Search page.",
+                icon="📭",
+                hint="News Search → enter a keyword → Analyze coverage",
+            )
             return
 
         insights = build_datastore_insights(records)
-        self._render_facts(records=records, payload=payload, insights=insights)
-        self._render_sentiment_section(insights=insights)
+        with st.container(border=True):
+            self._render_facts(records=records, payload=payload, insights=insights)
+            self._render_sentiment_section(insights=insights)
         self._render_trend_chart(insights=insights)
         self._render_entity_chart(insights=insights)
         self._render_publisher_chart(insights=insights)
         self._render_article_table(insights=insights, title="Stored Articles")
         st.divider()
-        st.markdown("#### Export")
+        render_section_heading("Export")
         render_export_downloads(
             sections=self._build_overview_export_sections(records=records, payload=payload, insights=insights),
             file_stem=build_export_file_stem(prefix="article_library_overview"),
@@ -115,127 +129,137 @@ class DataStorePage:
         )
 
     def _render_search_mode(self) -> None:
-        st.markdown("#### Saved Article Search")
-        st.caption(
-            "Retrieve articles that mention one or more companies, match an industry sector, "
-            "meet a sentiment threshold, and fall within a publication date range."
-        )
-
         default_start = date.today() - timedelta(days=30)
         default_end = date.today()
 
-        with st.form("article_library_search_form"):
-            company_text = st.text_input(
-                "Company names",
-                placeholder="e.g. NVIDIA, Apple, Tesla",
-                help="Separate multiple companies with commas.",
-                key="article_library_search_companies",
-            ).strip()
+        left_pad, center, right_pad = st.columns([1, 3, 1])
+        del left_pad, right_pad
 
-            filter_col_a, filter_col_b, filter_col_c = st.columns(3)
-            with filter_col_a:
-                sector_text = st.selectbox(
-                    "Industry sector",
-                    options=self._INDUSTRY_SECTOR_OPTIONS,
-                    key="article_library_search_sector",
-                    help="Choose a standard sector label for a more reliable match.",
-                )
-                use_min_sentiment = st.checkbox(
-                    "Use minimum sentiment threshold",
-                    value=False,
-                    key="article_library_use_min_sentiment",
-                )
-                min_sentiment = st.slider(
-                    "Minimum sentiment",
-                    min_value=-1.0,
-                    max_value=1.0,
-                    value=0.1,
-                    step=0.05,
-                    disabled=not use_min_sentiment,
-                    key="article_library_min_sentiment",
-                )
-            with filter_col_b:
-                use_date_range = st.checkbox(
-                    "Use publication date range",
-                    value=False,
-                    key="article_library_use_date_range",
-                )
-                date_range = st.date_input(
-                    "Publication range",
-                    value=(default_start, default_end),
-                    disabled=not use_date_range,
-                    key="article_library_date_range",
-                )
-            with filter_col_c:
-                result_limit = st.selectbox(
-                    "Result limit",
-                    options=[50, 100, 250, 500, 1000, 2500, 5000, 10000],
-                    index=4,
-                    key="article_library_result_limit",
-                    help="Higher limits can take longer to load.",
-                )
+        with center:
+            render_search_panel_header(
+                title="Search your saved library",
+                subtitle="Filter by keyword, sector, sentiment, or date.",
+            )
 
-            search_clicked = st.form_submit_button("Run search", type="primary")
+            with st.container(border=True):
+                with st.form("article_library_search_form"):
+                    company_text = st.text_input(
+                        "Search",
+                        placeholder="e.g. NVIDIA, Apple, Tesla",
+                        help="Enter one or more keywords (company, ticker, topic). Separate multiple with commas.",
+                        key="article_library_search_companies",
+                    ).strip()
 
-        clear_clicked = st.button("Clear search results", width="stretch")
+                    filter_col_a, filter_col_b = st.columns(2, gap="medium")
+                    with filter_col_a:
+                        sector_text = st.selectbox(
+                            "Industry sector",
+                            options=self._INDUSTRY_SECTOR_OPTIONS,
+                            key="article_library_search_sector",
+                            help="Choose a standard sector label for a more reliable match.",
+                        )
+                    with filter_col_b:
+                        result_limit = st.selectbox(
+                            "Max results",
+                            options=[50, 100, 250, 500, 1000, 2500, 5000, 10000],
+                            index=4,
+                            key="article_library_result_limit",
+                            help="Higher limits take longer to load.",
+                        )
 
-        if clear_clicked:
-            st.session_state.pop(self._SEARCH_STATE_KEY, None)
-            st.session_state.pop(self._SEARCH_MESSAGE_KEY, None)
-            st.session_state.pop(self._SEARCH_OK_KEY, None)
-            st.rerun()
+                    sentiment_range = st.slider(
+                        "Sentiment range",
+                        min_value=-1.0,
+                        max_value=1.0,
+                        value=(-1.0, 1.0),
+                        step=0.05,
+                        key="article_library_sentiment_range",
+                        help="Restrict matches by sentiment score. Leave at (−1.0, 1.0) for all.",
+                    )
+
+                    date_range = st.date_input(
+                        "Publication range",
+                        value=(default_start, default_end),
+                        key="article_library_date_range",
+                        help="Only saved articles published in this window are returned.",
+                    )
+
+                    search_clicked = st.form_submit_button(
+                        "Run search", type="primary", width="stretch"
+                    )
+
+        # Single slot for the results area. While the search runs we write the
+        # loading card into it; when results are ready we overwrite the same slot
+        # with the actual content — so old results are never visible during the wait.
+        content_zone = st.empty()
 
         if search_clicked:
+            min_sent, max_sent = sentiment_range
+            with content_zone.container():
+                st.markdown(
+                    render_loading_card_html(
+                        title="Filtering your library…",
+                        subtitle="Scanning saved articles by keyword, sector, sentiment, and date.",
+                    ),
+                    unsafe_allow_html=True,
+                )
             self._run_filtered_search(
                 company_text=company_text,
                 sector_text="" if sector_text == "Any" else sector_text,
-                use_min_sentiment=use_min_sentiment,
-                min_sentiment=min_sentiment,
-                use_date_range=use_date_range,
+                min_sentiment=float(min_sent),
+                max_sentiment=float(max_sent),
                 date_range=date_range,
                 result_limit=int(result_limit),
             )
 
         payload = st.session_state.get(self._SEARCH_STATE_KEY, {})
-        self._render_message(
-            message=str(st.session_state.get(self._SEARCH_MESSAGE_KEY, "")),
-            ok=bool(st.session_state.get(self._SEARCH_OK_KEY, True)),
-        )
+        message = str(st.session_state.get(self._SEARCH_MESSAGE_KEY, ""))
+        ok = bool(st.session_state.get(self._SEARCH_OK_KEY, True))
 
         if not isinstance(payload, dict) or not payload:
-            st.info("Run a search to see matching saved articles.")
+            with content_zone.container():
+                self._render_message(message=message, ok=ok)
             return
 
         records = payload.get("records", [])
         filters_summary = payload.get("filters_summary", [])
-        if filters_summary:
-            st.markdown("#### Active Filters")
-            st.dataframe(filters_summary, width="stretch", hide_index=True)
 
-        if not records:
-            st.info("No saved articles matched the selected filters.")
-            return
+        with content_zone.container():
+            self._render_message(message=message, ok=ok)
 
-        insights = build_datastore_insights(records)
-        self._render_search_summary(records=records, payload=payload, insights=insights)
-        self._render_sentiment_section(insights=insights)
-        self._render_publisher_chart(insights=insights)
-        self._render_trend_chart(insights=insights)
-        self._render_article_table(insights=insights, title="Matching Articles")
-        st.divider()
-        st.markdown("#### Export")
-        render_export_downloads(
-            sections=self._build_search_export_sections(payload=payload, insights=insights),
-            file_stem=build_export_file_stem(
-                prefix="article_library_search",
-                parts=[
-                    ", ".join(self._parse_company_tokens(st.session_state.get("article_library_search_companies", ""))),
-                    str(st.session_state.get("article_library_search_sector", "")).strip(),
-                ],
-            ),
-            key_prefix="article_library_search_export",
-            caption="Export the current filtered results as CSV, JSON, or Excel.",
-        )
+            if filters_summary:
+                render_section_heading("Active Filters")
+                st.dataframe(filters_summary, width="stretch", hide_index=True)
+
+            if not records:
+                render_empty_state(
+                    title="No matching articles",
+                    message="The current filters didn't return any saved articles.",
+                    icon="🪹",
+                    hint="Try widening the date range or sentiment range, or remove the sector filter.",
+                )
+                return
+
+            insights = build_datastore_insights(records)
+            self._render_search_summary(records=records, payload=payload, insights=insights)
+            self._render_sentiment_section(insights=insights)
+            self._render_publisher_chart(insights=insights)
+            self._render_trend_chart(insights=insights)
+            self._render_article_table(insights=insights, title="Matching Articles")
+            st.divider()
+            render_section_heading("Export")
+            render_export_downloads(
+                sections=self._build_search_export_sections(payload=payload, insights=insights),
+                file_stem=build_export_file_stem(
+                    prefix="article_library_search",
+                    parts=[
+                        ", ".join(self._parse_company_tokens(st.session_state.get("article_library_search_companies", ""))),
+                        str(st.session_state.get("article_library_search_sector", "")).strip(),
+                    ],
+                ),
+                key_prefix="article_library_search_export",
+                caption="Export the current filtered results as CSV, JSON, or Excel.",
+            )
 
     def _load_overview_payload(self, force_reload: bool) -> None:
         if not force_reload and self._OVERVIEW_STATE_KEY in st.session_state:
@@ -250,14 +274,16 @@ class DataStorePage:
         self,
         company_text: str,
         sector_text: str,
-        use_min_sentiment: bool,
         min_sentiment: float,
-        use_date_range: bool,
+        max_sentiment: float,
         date_range: Any,
         result_limit: int,
     ) -> None:
         company_tokens = self._parse_company_tokens(company_text)
-        date_from, date_to = self._resolve_date_filters(date_range=date_range, enabled=use_date_range)
+        date_from, date_to = self._resolve_date_filters(date_range=date_range, enabled=True)
+
+        # Treat full [-1, 1] sentiment slider as "no filter" so we don't constrain unnecessarily.
+        apply_sent_filter = not (min_sentiment <= -1.0 and max_sentiment >= 1.0)
 
         st.session_state.pop(self._SEARCH_STATE_KEY, None)
         st.session_state.pop(self._SEARCH_MESSAGE_KEY, None)
@@ -269,7 +295,8 @@ class DataStorePage:
             industry_sector=sector_text or None,
             date_from=date_from,
             date_to=date_to,
-            min_sentiment=min_sentiment if use_min_sentiment else None,
+            min_sentiment=min_sentiment if apply_sent_filter else None,
+            max_sentiment=max_sentiment if apply_sent_filter else None,
             limit=max(1, min(int(result_limit), self._LIMIT)),
         )
 
@@ -278,9 +305,9 @@ class DataStorePage:
         payload["filters_summary"] = self._build_filters_summary(
             company_tokens=company_tokens,
             sector_text=sector_text,
-            use_min_sentiment=use_min_sentiment,
+            apply_sent_filter=apply_sent_filter,
             min_sentiment=min_sentiment,
-            use_date_range=use_date_range,
+            max_sentiment=max_sentiment,
             date_from=date_from,
             date_to=date_to,
             result_limit=result_limit,
@@ -296,86 +323,65 @@ class DataStorePage:
         insights: DatastoreInsights,
     ) -> None:
         st.divider()
-        st.markdown("#### Search Results")
-        st.caption("These metrics summarize the articles returned by your current filters.")
+        render_section_heading(
+            "Search Results",
+            "Summary of the articles returned by your current filters.",
+        )
 
         oldest, newest = self._resolve_date_range(records)
         metrics = st.columns(5)
-        metrics[0].metric("Matching Articles", str(int(payload.get("count", len(records)))))
-        metrics[1].metric("Average Score", f"{float(payload.get('avg_sentiment_score', 0.0)):+.3f}")
-        metrics[2].metric("Average Magnitude", f"{float(payload.get('avg_sentiment_magnitude', 0.0)):.3f}")
-        metrics[3].metric("Unique Publishers", str(int(insights.unique_publishers)))
-        metrics[4].metric("Unique Trends", str(int(insights.unique_trends)))
+        metrics[0].metric("Matching articles", str(int(payload.get("count", len(records)))))
+        metrics[1].metric("Average score", f"{float(payload.get('avg_sentiment_score', 0.0)):+.3f}")
+        metrics[2].metric("Average magnitude", f"{float(payload.get('avg_sentiment_magnitude', 0.0)):.3f}")
+        metrics[3].metric("Unique publishers", str(int(insights.unique_publishers)))
+        metrics[4].metric("Unique trends", str(int(insights.unique_trends)))
 
         time_col_a, time_col_b = st.columns(2)
         with time_col_a:
-            st.markdown("**Oldest Match (Zurich)**")
+            st.markdown("**Oldest match · Zurich**")
             st.caption(oldest)
         with time_col_b:
-            st.markdown("**Newest Match (Zurich)**")
+            st.markdown("**Newest match · Zurich**")
             st.caption(newest)
 
     def _render_facts(self, records: list[dict[str, Any]], payload: dict[str, Any], insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Overview")
+        render_section_heading("Overview")
 
         oldest, newest = self._resolve_date_range(records)
         metrics = st.columns(4)
-        metrics[0].metric("Stored Articles", str(int(payload.get("count", len(records)))))
-        metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
-        metrics[2].metric("Unique Trends", str(int(insights.unique_trends)))
-        metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
+        metrics[0].metric("Stored articles", str(int(payload.get("count", len(records)))))
+        metrics[1].metric("Unique publishers", str(int(insights.unique_publishers)))
+        metrics[2].metric("Unique trends", str(int(insights.unique_trends)))
+        metrics[3].metric("Unique entities", str(int(insights.unique_entities)))
 
         time_col_a, time_col_b = st.columns(2)
         with time_col_a:
-            st.markdown("**Oldest Article (Zurich)**")
+            st.markdown("**Oldest article · Zurich**")
             st.caption(oldest)
         with time_col_b:
-            st.markdown("**Newest Article (Zurich)**")
+            st.markdown("**Newest article · Zurich**")
             st.caption(newest)
 
     def _render_sentiment_section(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Sentiment Overview")
+        render_section_heading("Sentiment Overview")
 
         col_stats, col_meter = st.columns([1.4, 3])
         with col_stats:
-            st.metric("Average Score", f"{insights.sentiment.average_score:+.3f}")
-            st.metric("Average Magnitude", f"{insights.sentiment.average_magnitude:.3f}")
+            st.metric("Average score", f"{insights.sentiment.average_score:+.3f}")
+            st.metric("Average magnitude", f"{insights.sentiment.average_magnitude:.3f}")
         with col_meter:
             render_sentiment_meter(insights.sentiment.average_score)
 
-        st.markdown("#### Positive / Neutral / Negative Share")
-        pie_values = insights.sentiment.as_distribution_rows()
-        st.vega_lite_chart(
-            pie_values,
-            {
-                "mark": {"type": "arc", "innerRadius": 20},
-                "encoding": {
-                    "theta": {"field": "count", "type": "quantitative"},
-                    "color": {
-                        "field": "label",
-                        "type": "nominal",
-                        "scale": {
-                            "domain": ["Positive", "Neutral", "Negative"],
-                            "range": ["#1e8449", "#f4d03f", "#c0392b"],
-                        },
-                        "legend": {"title": "Label"},
-                    },
-                    "tooltip": [
-                        {"field": "label", "type": "nominal", "title": "Label"},
-                        {"field": "count", "type": "quantitative", "title": "Articles"},
-                    ],
-                },
-            },
-            width="stretch",
-        )
+        render_section_heading("Sentiment Distribution")
+        render_sentiment_donut(insights.sentiment.as_distribution_rows())
 
     def _render_trend_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Trends")
+        render_section_heading("Top Trends")
         if not insights.top_trends:
-            st.info("No trend data is available yet.")
+            st.info("No trend data is available yet.", icon="📈")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_trends]
@@ -383,9 +389,9 @@ class DataStorePage:
 
     def _render_entity_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Entities")
+        render_section_heading("Top Entities")
         if not insights.top_entities:
-            st.info("No entities are available yet.")
+            st.info("No entities are available yet.", icon="🏷️")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_entities]
@@ -393,9 +399,9 @@ class DataStorePage:
 
     def _render_publisher_chart(self, insights: DatastoreInsights) -> None:
         st.divider()
-        st.markdown("#### Top Publishers")
+        render_section_heading("Top Publishers")
         if not insights.top_publishers:
-            st.info("No publisher data is available yet.")
+            st.info("No publisher data is available yet.", icon="📰")
             return
 
         rows = [{"label": item.label, "count": int(item.count)} for item in insights.top_publishers]
@@ -403,8 +409,10 @@ class DataStorePage:
 
     def _render_article_table(self, insights: DatastoreInsights, title: str) -> None:
         st.divider()
-        st.markdown(f"#### {title}")
-        st.caption("Use the table to review article headlines, publishers, trends, and sentiment scores.")
+        render_section_heading(
+            title,
+            "Headlines, publishers, trends, and sentiment scores for each article.",
+        )
         st.dataframe(self._build_article_table_rows(insights), width="stretch", hide_index=True)
 
     def _render_ranked_bar(
@@ -450,20 +458,23 @@ class DataStorePage:
         self,
         company_tokens: list[str],
         sector_text: str,
-        use_min_sentiment: bool,
+        apply_sent_filter: bool,
         min_sentiment: float,
-        use_date_range: bool,
+        max_sentiment: float,
         date_from: str | None,
         date_to: str | None,
         result_limit: int,
     ) -> list[dict[str, str]]:
         """Build a compact summary table for the current search filters."""
+        sentiment_label = (
+            f"{min_sentiment:+.2f} to {max_sentiment:+.2f}" if apply_sent_filter else "Any"
+        )
         rows = [
             {
                 "Companies": ", ".join(company_tokens) if company_tokens else "Any",
                 "Industry Sector": sector_text or "Any",
-                "Minimum Sentiment": f"{min_sentiment:+.2f}" if use_min_sentiment else "Any",
-                "Publication Range": self._format_range_label(date_from, date_to) if use_date_range else "Any",
+                "Sentiment Range": sentiment_label,
+                "Publication Range": self._format_range_label(date_from, date_to) or "Any",
                 "Result Limit": str(int(result_limit)),
             }
         ]
@@ -603,76 +614,110 @@ class DataStorePage:
 
     def _render_long_term_analysis_mode(self) -> None:
         """Render Long-Term Ticker analysis with dropdown selector and trend data."""
-        st.markdown("#### Long-Term Ticker Analysis")
-        st.caption("Select a long-term tracked ticker to view its saved articles, trends, and sentiment analysis.")
-
         # Get available tickers from the long-term config
         available_tickers = [str(t).strip() for t in DEFAULT_LONG_TERM_TICKERS if str(t).strip()]
         if not available_tickers:
             st.warning("No long-term tickers are configured.")
             return
 
-        # Ticker selection dropdown
-        col_ticker, col_refresh = st.columns([3, 1])
-        with col_ticker:
-            if st.session_state.get("long_term_selected_ticker") not in available_tickers:
-                st.session_state["long_term_selected_ticker"] = available_tickers[0]
+        left_pad, center, right_pad = st.columns([1, 3, 1])
+        del left_pad, right_pad
 
-            selected_ticker = st.selectbox(
-                "Select Ticker",
-                options=available_tickers,
-                index=available_tickers.index(st.session_state.get("long_term_selected_ticker", available_tickers[0])),
-                key="long_term_selected_ticker",
+        with center:
+            render_search_panel_header(
+                title="Drill into a tracked ticker",
+                subtitle="Pick a ticker and click 'Run search' to load its saved coverage.",
             )
 
-        with col_refresh:
-            refresh_clicked = st.button("Refresh data", width="stretch")
+            with st.container(border=True):
+                with st.form("article_library_long_term_form"):
+                    if st.session_state.get("long_term_selected_ticker") not in available_tickers:
+                        st.session_state["long_term_selected_ticker"] = available_tickers[0]
 
-        # Load data for selected ticker
-        self._load_long_term_payload(ticker=selected_ticker, force_reload=refresh_clicked)
+                    selected_ticker = st.selectbox(
+                        "Tracked ticker",
+                        options=available_tickers,
+                        index=available_tickers.index(
+                            st.session_state.get("long_term_selected_ticker", available_tickers[0])
+                        ),
+                        key="long_term_selected_ticker",
+                        help="Type to filter the list. Click 'Run search' to load the selected ticker.",
+                    )
+                    st.caption(f"{len(available_tickers)} ticker(s) tracked by the long-term collector.")
 
-        # Render messages
+                    run_search_clicked = st.form_submit_button(
+                        "Run search", type="primary", width="stretch"
+                    )
+
+        payload_key = "long_term_analysis_payload"
+        state_ticker_key = "long_term_analysis_ticker"
         message_key = "long_term_analysis_message"
         ok_key = "long_term_analysis_ok"
-        self._render_message(
-            message=str(st.session_state.get(message_key, "")),
-            ok=bool(st.session_state.get(ok_key, True)),
-        )
 
-        # Get payload and render
-        payload_key = "long_term_analysis_payload"
+        ticker_changed = (
+            payload_key not in st.session_state
+            or st.session_state.get(state_ticker_key) != selected_ticker
+        )
+        should_reload = ticker_changed or run_search_clicked
+
+        # Single slot for everything below the selector — guarantees stale data
+        # is removed the moment a new ticker is loaded.
+        content_zone = st.empty()
+
+        if should_reload:
+            with content_zone.container():
+                st.markdown(
+                    render_loading_card_html(
+                        title=f"Loading articles for {selected_ticker}…",
+                        subtitle="Filtering the datastore for matches and computing sentiment.",
+                    ),
+                    unsafe_allow_html=True,
+                )
+            self._load_long_term_payload(ticker=selected_ticker, force_reload=run_search_clicked)
+
         payload = st.session_state.get(payload_key, {})
+        message = str(st.session_state.get(message_key, ""))
+        ok = bool(st.session_state.get(ok_key, True))
 
-        if not isinstance(payload, dict) or not payload:
-            st.info(f"No saved articles found for ticker '{selected_ticker}' yet.")
-            return
+        with content_zone.container():
+            self._render_message(message=message, ok=ok)
 
-        records = payload.get("records", [])
-        if not records:
-            st.info(f"No articles match the ticker '{selected_ticker}'.")
-            return
+            if not isinstance(payload, dict) or not payload:
+                render_empty_state(
+                    title=f"No saved articles for {selected_ticker}",
+                    message="The collector hasn't yet stored articles for this ticker.",
+                    icon="📭",
+                    hint="Open the Long-Term Trends page and click 'Collect now' to trigger a fresh cycle.",
+                )
+                return
 
-        # Build insights from filtered records
-        insights = build_datastore_insights(records)
+            records = payload.get("records", [])
+            if not records:
+                render_empty_state(
+                    title=f"No matches for {selected_ticker}",
+                    message="No saved articles contain this ticker yet.",
+                    icon="🪹",
+                )
+                return
 
-        # Render analysis sections
-        st.divider()
-        self._render_long_term_facts(records=records, ticker=selected_ticker, insights=insights)
-        self._render_sentiment_section(insights=insights)
-        self._render_trend_chart(insights=insights)
-        self._render_entity_chart(insights=insights)
-        self._render_publisher_chart(insights=insights)
-        self._render_article_table(insights=insights, title=f"Articles matching '{selected_ticker}'")
+            insights = build_datastore_insights(records)
 
-        # Export section
-        st.divider()
-        st.markdown("#### Export")
-        render_export_downloads(
-            sections=self._build_long_term_export_sections(ticker=selected_ticker, records=records, insights=insights),
-            file_stem=build_export_file_stem(prefix="article_library_long_term", parts=[selected_ticker]),
-            key_prefix="article_library_long_term_export",
-            caption=f"Export the '{selected_ticker}' analysis as CSV, JSON, or Excel.",
-        )
+            st.divider()
+            self._render_long_term_facts(records=records, ticker=selected_ticker, insights=insights)
+            self._render_sentiment_section(insights=insights)
+            self._render_trend_chart(insights=insights)
+            self._render_entity_chart(insights=insights)
+            self._render_publisher_chart(insights=insights)
+            self._render_article_table(insights=insights, title=f"Articles matching '{selected_ticker}'")
+
+            st.divider()
+            render_section_heading("Export")
+            render_export_downloads(
+                sections=self._build_long_term_export_sections(ticker=selected_ticker, records=records, insights=insights),
+                file_stem=build_export_file_stem(prefix="article_library_long_term", parts=[selected_ticker]),
+                key_prefix="article_library_long_term_export",
+                caption=f"Export the '{selected_ticker}' analysis as CSV, JSON, or Excel.",
+            )
 
     def _load_long_term_payload(self, ticker: str, force_reload: bool) -> None:
         """Load articles matching the selected long-term ticker."""
@@ -707,22 +752,22 @@ class DataStorePage:
         insights: DatastoreInsights,
     ) -> None:
         """Render overview metrics for the selected long-term ticker."""
-        st.markdown("#### Overview")
+        render_section_heading("Overview")
 
         oldest, newest = self._resolve_date_range(records)
         metrics = st.columns(5)
-        metrics[0].metric("Matching Articles", str(len(records)))
-        metrics[1].metric("Unique Publishers", str(int(insights.unique_publishers)))
-        metrics[2].metric("Unique Trends", str(int(insights.unique_trends)))
-        metrics[3].metric("Unique Entities", str(int(insights.unique_entities)))
-        metrics[4].metric("Avg Sentiment", f"{insights.sentiment.average_score:+.3f}")
+        metrics[0].metric("Matching articles", str(len(records)))
+        metrics[1].metric("Unique publishers", str(int(insights.unique_publishers)))
+        metrics[2].metric("Unique trends", str(int(insights.unique_trends)))
+        metrics[3].metric("Unique entities", str(int(insights.unique_entities)))
+        metrics[4].metric("Avg sentiment", f"{insights.sentiment.average_score:+.3f}")
 
         time_col_a, time_col_b = st.columns(2)
         with time_col_a:
-            st.markdown("**Oldest Article (Zurich)**")
+            st.markdown("**Oldest article · Zurich**")
             st.caption(oldest)
         with time_col_b:
-            st.markdown("**Newest Article (Zurich)**")
+            st.markdown("**Newest article · Zurich**")
             st.caption(newest)
 
     def _build_long_term_export_sections(

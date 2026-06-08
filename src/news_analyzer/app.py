@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import sys
 from typing import Any
 
 import yaml
+
+LOGGER = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
@@ -47,28 +50,76 @@ def _resolve_path(path_value: str | None) -> Path | None:
 
 
 def _discover_secret_credentials_path() -> Path | None:
-    """Auto-discover a service account JSON in ROOT/secrets."""
-    secrets_dir = ROOT / "secrets"
-    if not secrets_dir.exists():
-        return None
+    """Auto-discover a service account JSON in ROOT/secrets or ~/gcp-secrets."""
+    candidate_dirs = [ROOT / "secrets", Path.home() / "gcp-secrets"]
 
-    json_files = sorted(
-        [item for item in secrets_dir.glob("*.json") if item.is_file()],
-        key=lambda item: item.stat().st_mtime,
-        reverse=True,
+    for secrets_dir in candidate_dirs:
+        if not secrets_dir.exists():
+            continue
+
+        json_files = sorted(
+            [item for item in secrets_dir.glob("*.json") if item.is_file()],
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if json_files:
+            return json_files[0].resolve()
+
+    return None
+
+
+def _validate_service_account_file(path: Path) -> tuple[bool, str]:
+    """Try to obtain a token from the service-account JSON. Returns (ok, error_message).
+
+    Catches the common "key was deleted in GCP" case (`invalid_grant: account not found`),
+    so we can fall back to offline mode instead of spamming gRPC auth errors at runtime.
+    """
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account
+    except Exception as exc:  # noqa: BLE001
+        return False, f"google-auth not importable: {exc}"
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            str(path),
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        creds.refresh(Request())
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def _activate_credentials(path: Path) -> str | None:
+    """Validate and activate a credentials file. Returns the path if usable, else None."""
+    ok, error = _validate_service_account_file(path)
+    if ok:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(path)
+        return str(path)
+
+    LOGGER.warning(
+        "Google credentials at %s are not usable (%s). "
+        "Falling back to offline mode: mock sentiment + Firestore disabled.",
+        path,
+        error,
     )
-    if not json_files:
-        return None
-
-    return json_files[0].resolve()
+    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    return None
 
 
 def _bootstrap_credentials(datastore_payload: dict[str, Any]) -> str | None:
-    """Set GOOGLE_APPLICATION_CREDENTIALS using env/config/secrets fallback order."""
+    """Set GOOGLE_APPLICATION_CREDENTIALS using env/config/secrets fallback order.
+
+    Each candidate is validated by trying a real token refresh. If the discovered file
+    is revoked/expired/account-deleted, we skip it and try the next one, finally
+    returning None so the app runs in offline mode.
+    """
     env_candidate = _resolve_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""))
     if env_candidate is not None:
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(env_candidate)
-        return str(env_candidate)
+        activated = _activate_credentials(env_candidate)
+        if activated:
+            return activated
 
     if _is_cloud_run():
         return None
@@ -76,13 +127,15 @@ def _bootstrap_credentials(datastore_payload: dict[str, Any]) -> str | None:
     raw_config_path = datastore_payload.get("credentials_path")
     config_candidate = _resolve_path(str(raw_config_path).strip())
     if config_candidate is not None:
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(config_candidate)
-        return str(config_candidate)
+        activated = _activate_credentials(config_candidate)
+        if activated:
+            return activated
 
     secret_candidate = _discover_secret_credentials_path()
     if secret_candidate is not None:
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(secret_candidate)
-        return str(secret_candidate)
+        activated = _activate_credentials(secret_candidate)
+        if activated:
+            return activated
 
     return None
 

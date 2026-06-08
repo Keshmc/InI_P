@@ -224,7 +224,7 @@ class LongTermTrendScheduler:
                 extract_full_text=self.config.extract_full_text,
                 include_entities=self.config.include_entities,
                 use_mock_nlp=False,
-                fallback_to_mock_on_error=False,
+                fallback_to_mock_on_error=True,
                 store_to_datastore=True,
                 industry_sector="",
             )

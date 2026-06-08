@@ -11,8 +11,15 @@ from dateutil import parser as date_parser
 import streamlit as st
 
 from news_analyzer.model import DatastoreQuery
-from news_analyzer.model.trends import LongTermTrendConfig
+from news_analyzer.model.trends import LongTermTrendConfig, LongTermTrendScheduler
 from news_analyzer.presenter import NewsPresenter
+from news_analyzer.view.pages.general.topbar import (
+    build_collector_status_pill,
+    render_empty_state,
+    render_loading_card_html,
+    render_page_header,
+    render_section_heading,
+)
 from news_analyzer.view.utils import (
     build_export_file_stem,
     format_swiss_date_time,
@@ -35,25 +42,83 @@ class LongTermPage:
         presenter: NewsPresenter,
         trend_config: LongTermTrendConfig,
         trend_status: dict[str, Any],
+        scheduler: LongTermTrendScheduler | None = None,
     ) -> None:
         self.presenter = presenter
         self.trend_config = trend_config
         self.trend_status = trend_status
+        self.scheduler = scheduler
 
     def render(self) -> None:
         """Render scheduler status, active tickers, and datastore history charts."""
-        st.title("Long-Term Trends")
-        st.caption("Track which long-term tickers are active and how their saved article history grows over time.")
-        st.caption("Charts use ingestion timestamps when available and fall back to analysis or publish timestamps.")
+        render_page_header(
+            eyebrow="Continuous monitoring",
+            title="Long-Term Trends",
+            subtitle=(
+                "Track which tickers the background collector watches and how their saved "
+                "article history grows over time."
+            ),
+            meta="Timestamps in Europe/Zurich",
+        )
 
-        action_col, info_col = st.columns([1, 3])
-        with action_col:
-            refresh_clicked = st.button("Refresh long-term view", type="primary", width="stretch")
-        with info_col:
-            st.caption("This view only includes saved records that match the currently configured long-term tickers.")
-            st.caption(f"The dashboard scans up to the latest {self._DATASTORE_LIMIT:,} saved records.")
+        ticker_count = len([item for item in self.trend_config.tickers if str(item).strip()])
+        with st.container(border=True):
+            action_col, info_col = st.columns([1, 3])
+            with action_col:
+                collect_clicked = st.button(
+                    "Collect now",
+                    type="primary",
+                    width="stretch",
+                    disabled=self.scheduler is None,
+                    help=(
+                        "Run one collection cycle immediately, instead of waiting for the "
+                        f"next scheduled run (every {self.trend_config.interval_minutes} min)."
+                    ),
+                )
+            with info_col:
+                st.markdown(
+                    f"**Tracks {ticker_count} ticker(s)** · "
+                    f"runs every {self.trend_config.interval_minutes} min · "
+                    f"scans up to {self._DATASTORE_LIMIT:,} saved records.",
+                )
+                st.caption(
+                    "Charts prefer ingestion timestamps, falling back to analysis or publish times."
+                )
 
-        self._load_payload(force_reload=refresh_clicked)
+        if collect_clicked and self.scheduler is not None:
+            loading_zone = st.empty()
+            loading_zone.markdown(
+                render_loading_card_html(
+                    title=f"Collecting articles for {ticker_count} ticker(s)…",
+                    subtitle="Fetching feeds, deduplicating, scoring sentiment, and saving new records.",
+                ),
+                unsafe_allow_html=True,
+            )
+            try:
+                self.scheduler.run_once()
+            finally:
+                loading_zone.empty()
+            # Force a reload of the page-level payload so charts pick up the new records.
+            st.session_state.pop(self._STATE_KEY, None)
+            st.session_state.pop(self._CONFIG_KEY, None)
+            self.trend_status = self.scheduler.status()
+            st.rerun()
+
+        if self._STATE_KEY not in st.session_state:
+            loading_zone = st.empty()
+            loading_zone.markdown(
+                render_loading_card_html(
+                    title="Loading long-term coverage…",
+                    subtitle="Scanning saved articles for configured tickers and aggregating timelines.",
+                ),
+                unsafe_allow_html=True,
+            )
+            try:
+                self._load_payload(force_reload=False)
+            finally:
+                loading_zone.empty()
+        else:
+            self._load_payload(force_reload=False)
         self._render_message(
             str(st.session_state.get(self._MESSAGE_KEY, "")),
             bool(st.session_state.get(self._OK_KEY, True)),
@@ -61,7 +126,12 @@ class LongTermPage:
 
         payload = st.session_state.get(self._STATE_KEY, {})
         if not isinstance(payload, dict):
-            st.info("No long-term data is available yet.")
+            self._render_empty_state()
+            return
+
+        if int(payload.get("matched_articles", 0)) == 0:
+            self._render_empty_state()
+            self._render_scheduler_status()
             return
 
         self._render_scheduler_status()
@@ -70,6 +140,18 @@ class LongTermPage:
         self._render_history_charts(payload)
         self._render_recent_articles(payload)
         self._render_export(payload)
+
+    def _render_empty_state(self) -> None:
+        interval = int(self.trend_config.interval_minutes)
+        render_empty_state(
+            title="No long-term articles yet",
+            message=(
+                f"The background collector runs every {interval} min. "
+                "Click 'Collect now' above to run one cycle immediately."
+            ),
+            icon="🌱",
+            hint="Tip: a degraded status above means the last cycle failed — check the scheduler tooltip.",
+        )
 
     def _load_payload(self, force_reload: bool) -> None:
         config_signature = "|".join(self.trend_config.tickers)
@@ -119,45 +201,57 @@ class LongTermPage:
         }
 
     def _render_scheduler_status(self) -> None:
-        st.divider()
-        st.markdown("#### Scheduler Status")
+        render_section_heading(
+            "Scheduler",
+            "Status of the background collector that keeps long-term tickers up to date.",
+        )
 
         last_run = format_swiss_timestamp(str(self.trend_status.get("last_run_at", "") or ""))
         interval_minutes = int(self.trend_status.get("interval_minutes", self.trend_config.interval_minutes))
-        state_label = "Running" if self.trend_status.get("running") else "Stopped"
         configured_tickers = len([item for item in self.trend_config.tickers if str(item).strip()])
         last_result = self.trend_status.get("last_result", {})
         totals = last_result.get("totals", {}) if isinstance(last_result, dict) else {}
 
-        metric_cols = st.columns(4)
-        metric_cols[0].metric("Scheduler", state_label)
-        metric_cols[1].metric("Interval", f"{interval_minutes} min")
-        metric_cols[2].metric("Configured Tickers", str(configured_tickers))
-        metric_cols[3].metric("Last Run (Zurich)", last_run if last_run != "-" else "Not yet")
+        with st.container(border=True):
+            st.markdown(
+                (
+                    '<div class="na-inline-status">'
+                    f"{build_collector_status_pill(self.trend_status)}"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
 
-        detail_cols = st.columns(3)
-        detail_cols[0].metric("Run On Startup", "Yes" if self.trend_config.run_on_startup else "No")
-        detail_cols[1].metric("Period", str(self.trend_config.period).strip() or "-")
-        detail_cols[2].metric("Max Results Per Ticker", str(int(self.trend_config.max_results)))
+            metric_cols = st.columns(3)
+            metric_cols[0].metric("Interval", f"{interval_minutes} min")
+            metric_cols[1].metric("Configured tickers", str(configured_tickers))
+            metric_cols[2].metric("Last run · Zurich", last_run if last_run != "-" else "Not yet")
 
-        if totals:
-            st.caption("Latest scheduler cycle")
-            result_cols = st.columns(5)
-            result_cols[0].metric("Fetched", str(int(totals.get("fetched", 0))))
-            result_cols[1].metric("Existing", str(int(totals.get("existing", 0))))
-            result_cols[2].metric("New", str(int(totals.get("new", 0))))
-            result_cols[3].metric("Saved", str(int(totals.get("saved", 0))))
-            result_cols[4].metric("Loaded", str(int(totals.get("loaded", 0))))
+            detail_cols = st.columns(3)
+            detail_cols[0].metric("Runs on startup", "Yes" if self.trend_config.run_on_startup else "No")
+            detail_cols[1].metric("Lookback period", str(self.trend_config.period).strip() or "-")
+            detail_cols[2].metric("Max results per ticker", str(int(self.trend_config.max_results)))
+
+            if totals:
+                st.caption("Latest scheduler cycle")
+                result_cols = st.columns(5)
+                result_cols[0].metric("Fetched", str(int(totals.get("fetched", 0))))
+                result_cols[1].metric("Existing", str(int(totals.get("existing", 0))))
+                result_cols[2].metric("New", str(int(totals.get("new", 0))))
+                result_cols[3].metric("Saved", str(int(totals.get("saved", 0))))
+                result_cols[4].metric("Loaded", str(int(totals.get("loaded", 0))))
 
     def _render_active_tickers(self, payload: dict[str, Any]) -> None:
         st.divider()
-        st.markdown("#### Active Tickers")
-        st.caption("These are the tickers currently configured for the automatic long-term collector.")
+        render_section_heading(
+            "Active Tickers",
+            "Tickers currently configured for the automatic long-term collector.",
+        )
         st.dataframe(payload.get("ticker_rows", []), width="stretch", hide_index=True)
 
     def _render_coverage_summary(self, payload: dict[str, Any]) -> None:
         st.divider()
-        st.markdown("#### Coverage Overview")
+        render_section_heading("Coverage Overview")
 
         summary_row = {}
         summary_rows = payload.get("summary_rows", [])
@@ -165,20 +259,25 @@ class LongTermPage:
             summary_row = summary_rows[0]
 
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Configured Tickers", str(int(summary_row.get("configured_tickers", 0))))
-        metric_cols[1].metric("Tickers With Data", str(int(summary_row.get("tickers_with_saved_articles", 0))))
-        metric_cols[2].metric("Saved Long-Term Articles", str(int(summary_row.get("saved_articles", 0))))
-        metric_cols[3].metric("Last Run (Zurich)", str(summary_row.get("last_run_at_zurich", "-")))
+        metric_cols[0].metric("Configured tickers", str(int(summary_row.get("configured_tickers", 0))))
+        metric_cols[1].metric("Tickers with data", str(int(summary_row.get("tickers_with_saved_articles", 0))))
+        metric_cols[2].metric("Saved long-term articles", str(int(summary_row.get("saved_articles", 0))))
+        metric_cols[3].metric("Last run · Zurich", str(summary_row.get("last_run_at_zurich", "-")))
 
     def _render_history_charts(self, payload: dict[str, Any]) -> None:
         st.divider()
-        st.markdown("#### Article Growth Over Time")
-        st.caption("This chart shows the cumulative total of all saved long-term articles over time.")
+        render_section_heading(
+            "Article Growth Over Time",
+            "Cumulative total of all saved long-term articles, day by day.",
+        )
 
         cumulative_rows = payload.get("cumulative_rows", [])
         timeline_rows = payload.get("timeline_rows", [])
         if not cumulative_rows or not timeline_rows:
-            st.info("No saved long-term articles are available yet for the configured tickers.")
+            st.info(
+                "No timeline data yet — once the collector saves articles, the growth chart appears here.",
+                icon="🌱",
+            )
             return
 
         date_order = self._build_date_order(cumulative_rows)
@@ -200,8 +299,10 @@ class LongTermPage:
             width="stretch",
         )
 
-        st.markdown("#### Ticker Breakdown Over Time")
-        st.caption("Daily saved article counts grouped by configured long-term ticker.")
+        render_section_heading(
+            "Ticker Breakdown Over Time",
+            "Daily saved article counts grouped by configured long-term ticker.",
+        )
         st.vega_lite_chart(
             timeline_rows,
             {
@@ -222,13 +323,15 @@ class LongTermPage:
 
     def _render_recent_articles(self, payload: dict[str, Any]) -> None:
         st.divider()
-        st.markdown("#### Recent Long-Term Articles")
-        st.caption("Recent saved records that match the currently configured long-term tickers.")
+        render_section_heading(
+            "Recent Long-Term Articles",
+            "Latest saved records matching the configured long-term tickers.",
+        )
         st.dataframe(payload.get("recent_articles", []), width="stretch", hide_index=True)
 
     def _render_export(self, payload: dict[str, Any]) -> None:
         st.divider()
-        st.markdown("#### Export")
+        render_section_heading("Export")
         render_export_downloads(
             sections={
                 "summary": payload.get("summary_rows", []),

@@ -8,8 +8,21 @@ import streamlit as st
 
 from news_analyzer.model import PipelineProgress, SearchRequest, build_datastore_insights, entities_to_display, sentiment_label
 from news_analyzer.presenter import NewsPresenter
+from news_analyzer.view.pages.general.topbar import (
+    render_empty_state,
+    render_loading_card_html,
+    render_page_header,
+    render_search_panel_header,
+    render_section_heading,
+)
 from news_analyzer.view.pages.search.sentiment_score import render_sentiment_meter
-from news_analyzer.view.utils import build_export_file_stem, format_swiss_date_time, render_export_downloads, to_export_cell
+from news_analyzer.view.utils import (
+    build_export_file_stem,
+    format_swiss_date_time,
+    render_export_downloads,
+    render_sentiment_donut,
+    to_export_cell,
+)
 
 PERIOD_OPTIONS = ["1h", "6h", "12h", "1d", "3d", "7d"]
 
@@ -32,44 +45,73 @@ class NewsSearchPage:
             self._render_analysis(payload)
 
     def _render_search_form(self) -> None:
-        form_col, spacer_col = st.columns([2.4, 1.6])
-        del spacer_col
+        render_page_header(
+            eyebrow="Discover",
+            title="News Search",
+            subtitle=(
+                "Search recent coverage by keyword. New matches are analyzed and saved to your "
+                "article library automatically."
+            ),
+            meta="Timestamps in Europe/Zurich",
+        )
 
-        with form_col:
-            st.title("News Search")
-            st.caption("Search by keyword to analyze recent coverage.")
-            st.caption("New articles are analyzed and added to the saved article library automatically.")
-            st.caption("Hint: Use the Article Library → Long-Term Analysis tab to analyze trending topics.")
+        left_pad, center, right_pad = st.columns([1, 3, 1])
+        del left_pad, right_pad
 
-            keyword = st.text_input("Keyword", placeholder="e.g. NVIDIA, Tesla, Apple", key="search_keyword")
-
-            period_default_index = PERIOD_OPTIONS.index("1d")
-            period = st.selectbox(
-                "Time Interval",
-                options=PERIOD_OPTIONS,
-                index=period_default_index,
-                key="search_period",
+        with center:
+            render_search_panel_header(
+                title="Find recent coverage",
+                subtitle="Type a keyword, pick a time window, and we'll do the rest.",
             )
-            st.caption("All matching articles in the selected interval will be processed.")
 
-            with st.expander("Advanced Settings", expanded=False):
-                st.caption("Use these options if you want deeper analysis for each article.")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    extract_full_text = st.checkbox(
-                        "Extract full article text",
+            with st.container(border=True):
+                keyword = st.text_input(
+                    "Keyword",
+                    placeholder="e.g. NVIDIA, Tesla, Apple",
+                    key="search_keyword",
+                    label_visibility="collapsed",
+                    help="Enter a company, ticker, or topic to search for in recent news.",
+                )
+
+                st.caption("Time window")
+                period = st.segmented_control(
+                    "Time window",
+                    options=PERIOD_OPTIONS,
+                    default=st.session_state.get("search_period", "1d"),
+                    key="search_period",
+                    label_visibility="collapsed",
+                )
+                if period is None:
+                    period = "1d"
+
+                st.markdown('<div class="na-toggle-row">', unsafe_allow_html=True)
+                toggle_col_a, toggle_col_b = st.columns([1, 1], gap="small")
+                with toggle_col_a:
+                    extract_full_text = st.toggle(
+                        "Full article text",
                         value=True,
                         key="search_extract_full_text",
+                        help="Fetch and analyze the full article body instead of just the headline + summary.",
                     )
-                    include_entities = st.checkbox(
-                        "Include entity extraction",
+                with toggle_col_b:
+                    include_entities = st.toggle(
+                        "Entity extraction",
                         value=True,
                         key="search_include_entities",
+                        help="Identify named entities (companies, people, locations) per article.",
                     )
-                with col_b:
-                    st.info("The UI does not cap results. Provider limits are handled automatically.")
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            submitted = st.button("Run analysis", type="primary", width="stretch", key="search_submit")
+                submitted = st.button(
+                    "Analyze coverage",
+                    type="primary",
+                    width="stretch",
+                    key="search_submit",
+                )
+
+            st.caption(
+                "Tracking the same ticker over weeks? Open **Article Library → Long-Term Ticker**."
+            )
 
             if not submitted:
                 return
@@ -79,11 +121,11 @@ class NewsSearchPage:
                 keyword=keyword.strip(),
                 topic="",
                 period=period,
-                max_results=300,
+                max_results=1000,
                 extract_full_text=extract_full_text,
                 include_entities=include_entities,
                 use_mock_nlp=False,
-                fallback_to_mock_on_error=False,
+                fallback_to_mock_on_error=True,
                 store_to_datastore=True,
                 industry_sector="",
             )
@@ -109,9 +151,10 @@ class NewsSearchPage:
         request = payload.get("request", {})
         insights = build_datastore_insights(records)
 
-        st.title("Search Analysis")
-        st.caption("These results reflect the latest saved records for this search.")
-        st.caption("All timestamps are shown in Europe/Zurich.")
+        render_section_heading(
+            "Search Analysis",
+            "Latest saved records for this query, with timestamps in Europe/Zurich.",
+        )
 
         articles_found = int(summary.get("articles_found", 0))
         existing_articles = int(summary.get("existing_articles", 0))
@@ -124,7 +167,7 @@ class NewsSearchPage:
         status_ratio = min(loaded_articles / total_articles, 1.0)
         st.progress(
             status_ratio,
-            text=f"{loaded_articles}/{total_articles} saved article(s) are available for the selected {period_label} window.",
+            text=f"{loaded_articles} of {total_articles} saved article(s) loaded for the {period_label} window.",
         )
 
         status_message = st.session_state.get("news_search_message", "Search completed.")
@@ -134,15 +177,15 @@ class NewsSearchPage:
             st.warning(status_message)
 
         st.divider()
-        metric_cols = st.columns(6)
-        metric_cols[0].metric("Fetched", str(articles_found))
-        metric_cols[1].metric("Already Saved", str(existing_articles))
-        metric_cols[2].metric("New", str(new_articles))
-        metric_cols[3].metric("Analyzed", str(analyzed_articles))
-        metric_cols[4].metric("Saved", str(saved_articles))
-        metric_cols[5].metric("Loaded", str(loaded_articles))
-
-        st.info("New articles are saved automatically before the results view is refreshed.")
+        with st.container(border=True):
+            row_a = st.columns(3)
+            row_a[0].metric("Fetched", str(articles_found))
+            row_a[1].metric("Already in library", str(existing_articles))
+            row_a[2].metric("New", str(new_articles))
+            row_b = st.columns(3)
+            row_b[0].metric("Analyzed", str(analyzed_articles))
+            row_b[1].metric("Saved", str(saved_articles))
+            row_b[2].metric("Loaded", str(loaded_articles))
 
         if warnings:
             with st.expander(f"Processing notes ({len(warnings)})"):
@@ -153,64 +196,36 @@ class NewsSearchPage:
                 for error in errors:
                     st.write(f"- {error}")
 
-        st.markdown("#### Sentiment Score")
+        render_section_heading(
+            "Sentiment Score",
+            "Average tone and strength of coverage in this window.",
+        )
         avg_sentiment = float(summary.get("avg_sentiment_score", 0.0))
         avg_magnitude = float(summary.get("avg_sentiment_magnitude", 0.0))
         col_metric, col_meter = st.columns([1.4, 3])
         with col_metric:
             metric_a, metric_b = st.columns(2)
             with metric_a:
-                st.metric("Average Score", f"{avg_sentiment:+.3f}")
+                st.metric("Average score", f"{avg_sentiment:+.3f}")
             with metric_b:
-                st.metric("Average Magnitude", f"{avg_magnitude:.3f}")
+                st.metric("Average magnitude", f"{avg_magnitude:.3f}")
         with col_meter:
             render_sentiment_meter(avg_sentiment)
 
         sentiment_distribution = insights.sentiment.as_distribution_rows()
-        st.markdown("#### Sentiment Distribution")
-        pie_values = sentiment_distribution
-        total_distribution = sum(item["count"] for item in pie_values)
-        if total_distribution <= 0:
-            st.info("No sentiment distribution available yet.")
-        else:
-            chart_col, table_col = st.columns([2.6, 1.4])
-            with chart_col:
-                st.vega_lite_chart(
-                    pie_values,
-                    {
-                        "mark": {"type": "arc", "innerRadius": 20},
-                        "encoding": {
-                            "theta": {"field": "count", "type": "quantitative"},
-                            "color": {
-                                "field": "label",
-                                "type": "nominal",
-                                "scale": {
-                                    "domain": ["Positive", "Neutral", "Negative"],
-                                    "range": ["#1e8449", "#f4d03f", "#c0392b"],
-                                },
-                                "legend": {"title": "Label"},
-                            },
-                            "tooltip": [
-                                {"field": "label", "type": "nominal", "title": "Label"},
-                                {"field": "count", "type": "quantitative", "title": "Articles"},
-                            ],
-                        },
-                    },
-                    width="stretch",
-                )
-            with table_col:
-                st.dataframe(
-                    [
-                        {"Label": "Positive", "Articles": pie_values[0]["count"]},
-                        {"Label": "Neutral", "Articles": pie_values[1]["count"]},
-                        {"Label": "Negative", "Articles": pie_values[2]["count"]},
-                    ],
-                    width="stretch",
-                    hide_index=True,
-                )
+        render_section_heading("Sentiment Distribution")
+        chart_col, table_col = st.columns([2.6, 1.4])
+        with chart_col:
+            render_sentiment_donut(sentiment_distribution)
+        with table_col:
+            st.dataframe(
+                [{"Label": item["label"], "Articles": item["count"]} for item in sentiment_distribution],
+                width="stretch",
+                hide_index=True,
+            )
 
         st.divider()
-        st.markdown("#### Sentiment Over Time")
+        render_section_heading("Sentiment Over Time")
         trend_rows: list[dict[str, Any]] = []
         for item in insights.trend_points:
             row = item.as_dict()
@@ -251,7 +266,7 @@ class NewsSearchPage:
             st.info("No trend data available (published date/time missing).")
 
         st.divider()
-        st.markdown("#### Top Extracted Entities")
+        render_section_heading("Top Extracted Entities")
         top_entity_rows = [{"entity": item.label, "count": item.count} for item in insights.top_entities]
         if top_entity_rows:
             chart_rows = [{"Entity": item["entity"], "Count": item["count"]} for item in top_entity_rows]
@@ -260,12 +275,15 @@ class NewsSearchPage:
             st.info("No entities extracted.")
 
         st.divider()
-        st.markdown("#### Results Table")
+        render_section_heading(
+            "Results Table",
+            "Filter, sort, and review every loaded article.",
+        )
         filtered_rows = self._render_table_filters_and_data(records)
-        st.caption(f"Showing: {len(filtered_rows)} / {len(records)} rows")
+        st.caption(f"Showing {len(filtered_rows)} of {len(records)} rows")
 
         st.divider()
-        st.markdown("#### Export")
+        render_section_heading("Export")
         export_sections = self._build_export_sections(
             request=request,
             summary=summary,
@@ -284,14 +302,6 @@ class NewsSearchPage:
             key_prefix="news_search_export",
             caption="Export the current search results as CSV, JSON, or Excel.",
         )
-
-        col_clear = st.columns([1, 2])[0]
-        with col_clear:
-            if st.button("Clear results", width="stretch"):
-                st.session_state.pop(self._SEARCH_PAYLOAD_KEY, None)
-                st.session_state.pop("news_search_message", None)
-                st.session_state.pop("news_search_ok", None)
-                st.rerun()
 
     def _render_table_filters_and_data(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         col_a, col_b, col_c = st.columns(3)
@@ -451,49 +461,54 @@ class NewsSearchPage:
         return str(row.get("topic", "")).strip()
 
     def _show_loading_screen(self, request: SearchRequest):
-        progress_placeholder = st.empty()
-        caption_placeholder = st.empty()
-        progress = progress_placeholder.progress(0.0, text="Starting analysis...")
-        caption_placeholder.caption("This can take a little longer for larger time windows.")
+        keyword_label = request.keyword.strip() or "your query"
+        loading_zone = st.empty()
+        with loading_zone.container():
+            st.markdown(
+                render_loading_card_html(
+                    title=f"Analyzing coverage for “{keyword_label}”",
+                    subtitle="Fetching articles, scoring sentiment, and saving results to your library.",
+                ),
+                unsafe_allow_html=True,
+            )
+            progress_placeholder = st.empty()
+            progress = progress_placeholder.progress(0.0, text="Starting analysis…")
 
-        def _on_progress(update: PipelineProgress) -> None:
-            safe_total = max(int(update.total), 1)
-            safe_processed = max(0, min(int(update.processed), safe_total))
-            ratio = self._build_progress_ratio(update.phase, safe_processed, safe_total)
+            def _on_progress(update: PipelineProgress) -> None:
+                safe_total = max(int(update.total), 1)
+                safe_processed = max(0, min(int(update.processed), safe_total))
+                ratio = self._build_progress_ratio(update.phase, safe_processed, safe_total)
+                progress.progress(
+                    ratio,
+                    text=self._build_progress_message(update, safe_processed, safe_total),
+                )
+
+            response = self.presenter.run_news_search(request, progress_callback=_on_progress)
+
+            payload = response.payload if isinstance(response.payload, dict) else {}
+            summary = payload.get("summary", {})
+            records = payload.get("records", [])
+            final_total = max(int(summary.get("articles_found", len(records))), 1)
             progress.progress(
-                ratio,
-                text=self._build_progress_message(update, safe_processed, safe_total),
+                1.0,
+                text=f"Done — {len(records)} of {final_total} saved article(s) ready.",
             )
 
-        response = self.presenter.run_news_search(request, progress_callback=_on_progress)
-
-        payload = response.payload if isinstance(response.payload, dict) else {}
-        summary = payload.get("summary", {})
-        records = payload.get("records", [])
-        final_total = max(int(summary.get("articles_found", len(records))), 1)
-        progress.progress(
-            1.0,
-            text=(
-                "Analysis complete. "
-                f"{len(records)} of {final_total} saved article(s) are ready."
-            ),
-        )
-        progress_placeholder.empty()
-        caption_placeholder.empty()
+        loading_zone.empty()
         return response
 
     @staticmethod
     def _build_progress_message(update: PipelineProgress, processed: int, total: int) -> str:
         """Return a short, user-friendly progress label for the loading bar."""
         phase_messages = {
-            "collect": "Collecting articles...",
-            "check_existing": "Checking which articles are already saved...",
-            "analyze": f"Analyzing articles ({processed}/{total})...",
-            "persist": "Saving new articles...",
-            "reload": "Refreshing the saved results...",
-            "done": "Analysis complete.",
+            "collect": "Fetching articles…",
+            "check_existing": "Checking for duplicates…",
+            "analyze": f"Running sentiment & entity analysis ({processed}/{total})…",
+            "persist": "Saving new articles…",
+            "reload": "Refreshing view…",
+            "done": "Done.",
         }
-        return phase_messages.get(update.phase, "Processing...")
+        return phase_messages.get(update.phase, "Processing…")
 
     def _build_progress_ratio(self, phase: str, processed: int, total: int) -> float:
         if phase == "done":

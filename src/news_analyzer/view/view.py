@@ -7,12 +7,12 @@ import streamlit as st
 from news_analyzer.model.trends import get_long_term_trend_scheduler, load_long_term_trend_config
 from news_analyzer.presenter import NewsPresenter
 from news_analyzer.view.pages.datastore.datastore_page import DataStorePage
-from news_analyzer.view.pages.general.sidebar import (
+from news_analyzer.view.pages.general.topbar import (
     DATASTORE_PAGE,
     LONG_TERM_PAGE,
     NEWS_SEARCH_PAGE,
     PUBLISHER_PAGE,
-    render_sidebar,
+    render_topbar,
 )
 from news_analyzer.view.pages.long_term.long_term_page import LongTermPage
 from news_analyzer.view.pages.publishers.publisher_page import PublisherPage
@@ -30,7 +30,7 @@ def run_view(presenter: NewsPresenter) -> None:
         page_title="News Analyzer",
         page_icon="N",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     _bootstrap_state()
 
@@ -42,11 +42,9 @@ def run_view(presenter: NewsPresenter) -> None:
     trend_scheduler.set_enabled(bool(trend_config.enabled))
     trend_status = trend_scheduler.status()
 
-    selected_page = render_sidebar(
+    selected_page = render_topbar(
         default_key=st.session_state.nav_page,
-        auto_trend_running=bool(trend_status.get("running", False)),
-        auto_trend_last_run=str(trend_status.get("last_run_at", "") or ""),
-        auto_trend_interval_minutes=int(trend_status.get("interval_minutes", 0)),
+        trend_status=trend_status,
     )
     st.session_state.nav_page = selected_page
 
@@ -67,6 +65,7 @@ def run_view(presenter: NewsPresenter) -> None:
             presenter=presenter,
             trend_config=trend_config,
             trend_status=current_status,
+            scheduler=trend_scheduler,
         ).render()
         return
 

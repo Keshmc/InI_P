@@ -10,7 +10,7 @@ from gnews import GNews
 
 
 LOGGER = logging.getLogger(__name__)
-GNEWS_MAX_RESULTS_CAP = 300
+GNEWS_MAX_RESULTS_CAP = 1000
 
 VALID_PERIODS = {"1h", "6h", "12h", "1d", "3d", "7d"}
 VALID_TOPICS = {
