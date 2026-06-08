@@ -4,7 +4,7 @@ This document describes the user-facing pages of the Streamlit application.
 
 ## Navigation
 
-The sidebar contains navigation links to all four main pages. In production it also shows `Collector: daily (Cloud Scheduler)` to indicate that long-term ingestion is handled externally. When running locally with the in-process scheduler enabled it shows the schedule and last run time.
+A sticky **top navigation bar** contains links to all four main pages plus a collector status pill (Live / Idle / Degraded / Stopped) that reflects what the long-term scheduler is currently doing. In production the pill summarizes the most recent Cloud Run Job execution; locally it reflects the in-process scheduler thread.
 
 ---
 
@@ -21,7 +21,7 @@ The sidebar contains navigation links to all four main pages. In production it a
 | Extract full article text | Downloads and parses the full article body |
 | Include entity extraction | Runs named entity recognition per article |
 
-Pressing **Run analysis** triggers the full pipeline:
+Pressing **Analyze coverage** triggers the full pipeline:
 1. Fetch articles from Google News
 2. Deduplicate against Firestore (skip already-stored articles)
 3. Extract full text (optional)
@@ -45,7 +45,7 @@ A progress bar with phase labels tracks the pipeline as it runs.
 
 ### Important Behavior
 
-- up to `300` provider results are requested per search
+- up to `1,000` provider results are requested per search (Google News RSS practical max is ~100)
 - articles already in Firestore are not re-analyzed
 - all timestamps shown in `Europe/Zurich`
 
@@ -53,13 +53,13 @@ A progress bar with phase labels tracks the pipeline as it runs.
 
 ## Article Library
 
-**Purpose**: Inspect and query the saved article collection. Loads up to `30,000` records.
+**Purpose**: Inspect and query the saved article collection. Loads up to `50,000` records.
 
-The page has three modes selectable via a radio button at the top.
+The page has three tabs at the top: **Overview**, **Search**, and **Long-Term Ticker**.
 
-### Overview Mode
+### Overview Tab
 
-Loads the most recent `30,000` saved articles automatically on first visit.
+Loads the most recent `50,000` saved articles automatically on first visit.
 
 | Section | Content |
 |---------|---------|
@@ -74,9 +74,9 @@ Loads the most recent `30,000` saved articles automatically on first visit.
 | Stored Articles | Full article table |
 | Export | CSV (ZIP), JSON, Excel |
 
-### Search Mode
+### Search Tab
 
-Filtered Firestore queries against the saved collection.
+Filtered Firestore queries against the saved collection. All filters live inside a form — the query runs when **Run search** is clicked.
 
 #### Filters
 
@@ -85,10 +85,10 @@ Filtered Firestore queries against the saved collection.
 | Company / keyword | One or more comma-separated search terms |
 | Industry sector | Standard sector label; "Any" disables this filter |
 | Sentiment range | Slider for min and max score (−1.0 to +1.0); full range = no filter |
-| Filter by publication date | Checkbox reveals a date-range picker (from / to) |
-| Result limit | 50 – 10,000 rows |
+| Publication range | Date range picker (defaults to the last 30 days) |
+| Max results | 50 – 10,000 rows |
 
-All filters are active immediately — no form submission needed. **Run search** executes the query, **Clear results** resets the view.
+**Run search** submits the form and replaces the result area.
 
 #### Result Sections
 
@@ -104,14 +104,14 @@ All filters are active immediately — no form submission needed. **Run search**
 | Matching Articles | Full article table |
 | Export | CSV (ZIP), JSON, Excel |
 
-### Long-Term Analysis Mode
+### Long-Term Ticker Tab
 
 Per-ticker deep-dive using the same Firestore query mechanism.
 
 | Control | Description |
 |---------|-------------|
-| Select Ticker | Dropdown of all configured long-term tickers |
-| Refresh data | Reloads Firestore data for the selected ticker |
+| Tracked ticker | Dropdown of all configured long-term tickers |
+| Run search | Submits the form and loads Firestore data for the selected ticker |
 
 #### Result Sections
 
@@ -131,45 +131,54 @@ Per-ticker deep-dive using the same Firestore query mechanism.
 
 ## Publisher Sentiment
 
-**Purpose**: Summarize how publishers write across the saved article collection. Scans up to `30,000` records.
+**Purpose**: Summarize how publishers write across the saved article collection. Scans up to `50,000` records. The page auto-loads on first visit.
 
 | Section | Content |
 |---------|---------|
-| Top-level metrics | Stored articles, publisher count, positive / neutral / negative publisher counts |
-| Average Publisher Score | Collection-wide sentiment score + meter |
-| Most Active Publisher | Publisher with the most saved articles |
-| Publisher breakdown | Full publisher table with article count, average score, sentiment label |
+| At a glance | Stored articles, publisher count, positive / neutral / negative publisher counts |
+| Average publisher score | Collection-wide sentiment score + meter, plus most active publisher |
+| Sentiment Distribution | Donut chart + count table by sentiment label |
+| Most Active Publishers | Top 15 ranked by saved articles |
+| Most Positive / Negative Publishers | Top 10 each by average sentiment |
+| All Publishers | Full publisher table with article count, average score, sentiment label, latest article |
 | Export | CSV (ZIP), JSON, Excel |
-
-Use **Refresh summary** to reload from Firestore.
 
 ---
 
 ## Long-Term Trends
 
-**Purpose**: Monitor long-term ticker coverage. The collector is triggered daily by Cloud Scheduler (not by the web app). Scans up to `30,000` records.
+**Purpose**: Monitor long-term ticker coverage. In production the collector is triggered daily by Cloud Scheduler (not by the web app). Scans up to `10,000` records.
 
-### Collector Status
+### Header Bar
 
-Four metrics reflecting the current state of the long-term data:
+At the top of the page:
+
+- **Collect now** button — runs one collection cycle immediately via the in-process scheduler (only enabled locally; disabled in production where Cloud Scheduler owns the schedule)
+- Caption summarizing how many tickers are tracked, the run interval, and the scan cap
+
+### Scheduler Section
+
+Inline status pill plus metrics:
 
 | Metric | Description |
 |--------|-------------|
-| Last Data Collection | Most recent `ingested_at` timestamp across all stored long-term records |
-| Search Window | The `period` setting used by each collection run (e.g. `1 day`) |
-| Max Articles / Ticker | Upper limit of articles fetched per ticker per run |
-| Configured Tickers | Number of tickers being monitored |
+| Interval | Run interval (e.g. 1440 min = 24 h) |
+| Configured tickers | Number of tickers being monitored |
+| Last run · Zurich | Last cycle timestamp in Europe/Zurich |
+| Runs on startup | Whether the local scheduler runs one cycle on app startup |
+| Lookback period | The `period` setting used by each collection run (e.g. `1d`) |
+| Max results per ticker | Upper limit of articles fetched per ticker per run |
 
-If the in-process scheduler is running locally, a second row shows per-cycle totals (fetched, existing, new, saved, loaded).
+A second row shows the latest cycle totals (fetched, existing, new, saved, loaded) when available.
 
 ### Coverage Overview
 
 | Metric | Description |
 |--------|-------------|
-| Configured Tickers | Total number of tickers in the config |
-| Tickers with Data | Tickers that have at least one saved article |
-| Tickers without Data | Tickers not yet covered (collector may not have run for them) |
-| Total Long-Term Articles | Total matching saved articles across all tickers |
+| Configured tickers | Total number of tickers in the config |
+| Tickers with data | Tickers that have at least one saved article |
+| Saved long-term articles | Total matching saved articles across all tickers |
+| Last run · Zurich | Last cycle timestamp |
 
 ### Configured Tickers Table
 

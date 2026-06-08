@@ -2,6 +2,8 @@
 
 Streamlit-based financial news analysis application with Google Cloud Firestore persistence, sentiment analysis, publisher monitoring, and long-term ticker tracking.
 
+**Live deployment:** https://news-analyzer-cc7trbhikq-ew.a.run.app/ (Cloud Run, `europe-west1`)
+
 ## What The App Does
 
 - searches recent news by keyword
@@ -15,25 +17,27 @@ Streamlit-based financial news analysis application with Google Cloud Firestore 
 ## Main Pages
 
 ### News Search
-- search by keyword
+- search by keyword via the **Analyze coverage** button
 - analyze recent coverage for a selected time window (1h–7d)
 - review sentiment score, distribution chart, trend chart, top entities, and full results table
 - new articles are saved automatically before the results view loads
 - export the current analysis
 
 ### Article Library
-- **Overview** — high-level metrics, sentiment overview, top trends, entities, publishers, article table
-- **Search** — filtered Datastore queries by company, sector, sentiment range, and publication date range; includes sentiment-over-time chart
-- **Long-Term Analysis** — per-ticker deep-dive with sentiment-over-time chart, trend and entity breakdown, article table
-- export any mode as CSV, JSON, or Excel
+The page uses three tabs at the top:
+- **Overview** — high-level metrics, sentiment overview, top trends, entities, publishers, article table (auto-loads on first visit)
+- **Search** — form with company/sector/sentiment/date filters; **Run search** executes the filtered Datastore query
+- **Long-Term Ticker** — ticker dropdown + **Run search** button for per-ticker deep-dive with sentiment-over-time chart, trend and entity breakdown, and article table
+- export any tab as CSV, JSON, or Excel
 
 ### Publisher Sentiment
-- aggregates how publishers tend to write across the saved article collection
-- publisher activity rankings, sentiment breakdown, extreme publishers
+- auto-loads on first visit and aggregates how publishers tend to write across the saved article collection
+- publisher activity rankings, sentiment breakdown, most positive / most negative publishers
 - export summary tables
 
 ### Long-Term Trends
-- collector status (last data collection, search window, max articles per ticker)
+- collector status pill (Live / Idle / Degraded / Stopped) reflecting the Cloud Scheduler state
+- **Collect now** button to trigger one collection cycle on demand (local scheduler only)
 - configured tickers table with per-ticker article counts and average sentiment
 - cumulative article growth chart over time
 - daily article count breakdown by ticker
@@ -68,11 +72,11 @@ src/news_analyzer/
   presenter/                      # View-to-model bridge (NewsPresenter)
   view/                           # Streamlit UI
     pages/search/                 # News Search page
-    pages/datastore/              # Article Library page
+    pages/datastore/              # Article Library page (Overview / Search / Long-Term Ticker tabs)
     pages/publishers/             # Publisher Sentiment page
     pages/long_term/              # Long-Term Trends page
-    pages/general/                # Shared sidebar component
-    utils/                        # Datetime formatting, export tools
+    pages/general/                # Shared topbar navigation + global styles
+    utils/                        # Datetime formatting, export tools, chart helpers
 
 docs/
   ui-pages.md                     # Detailed UI page descriptions
@@ -241,10 +245,10 @@ The Article Library search mode supports filtered Firestore queries:
 
 | Page / Mode | Scan limit |
 |-------------|------------|
-| News Search | up to 300 provider results per search |
-| Article Library (all modes) | up to 30,000 saved records |
-| Publisher Sentiment | up to 30,000 saved records |
-| Long-Term Trends | up to 30,000 saved records |
+| News Search | up to 1,000 provider results per search (Google News RSS practical max is ~100) |
+| Article Library (all tabs) | up to 50,000 saved records |
+| Publisher Sentiment | up to 50,000 saved records |
+| Long-Term Trends | up to 10,000 saved records |
 
 ## Export
 

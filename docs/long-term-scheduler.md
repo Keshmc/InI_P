@@ -156,16 +156,18 @@ For chart timestamps, the page uses this fallback chain:
 3. `published_at`
 4. `published_date`
 
-## Sidebar Status
+## Topbar Status Pill
 
-The sidebar shows different text depending on the environment:
+The collector status pill (top right of the navbar) reflects what the scheduler is *actually* doing — derived from `LongTermTrendScheduler.status()`:
 
-| Situation | Sidebar text |
-|-----------|-------------|
-| In-process scheduler running (local) | `Collector: running (in-process)` + schedule + last run |
-| In-process scheduler disabled (production) | `Collector: daily (Cloud Scheduler)` |
+| State | When |
+|-------|------|
+| **Stopped** | Background thread isn't running (production web app, scale-to-zero, or disabled) |
+| **Idle** | Thread is up but no cycle has completed yet |
+| **Degraded** | Last cycle errored OR saved zero records |
+| **Live** | Last cycle persisted records without errors |
 
-The "Last Data Collection" metric on the Long-Term Trends page is derived from the most recent `ingested_at` timestamp across all stored records — not from in-memory scheduler state. This means it correctly reflects the last Cloud Run Job execution even when the web app has no scheduler running.
+In production the web app runs with the scheduler disabled, so the pill stays **Stopped** there — the actual collection happens in the separate Cloud Run Job. The Long-Term Trends page's metrics (last run, latest cycle totals) are derived from stored records and Cloud Scheduler state, not from in-memory scheduler state, so they reflect Cloud Run Job executions correctly even when the web app's scheduler is off.
 
 ## Provider Notes
 
