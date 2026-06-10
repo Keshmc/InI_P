@@ -4,7 +4,7 @@ This document describes the user-facing pages of the Streamlit application.
 
 ## Navigation
 
-A sticky **top navigation bar** contains links to all four main pages plus a collector status pill (Live / Idle / Degraded / Stopped) that reflects what the long-term scheduler is currently doing. In production the pill summarizes the most recent Cloud Run Job execution; locally it reflects the in-process scheduler thread.
+A sticky **top navigation bar** contains links to all four main pages plus a collector status pill (Live / Idle / Degraded / Stopped). The pill is data-driven: it reads the most recent `ingested_at` timestamp from Firestore (cached per session) and combines it with the in-process scheduler state. So it reflects what the daily Cloud Run Job last did in production, and the local thread state during development.
 
 ---
 
@@ -153,7 +153,7 @@ Per-ticker deep-dive using the same Firestore query mechanism.
 
 At the top of the page:
 
-- **Collect now** button — runs one collection cycle immediately via the in-process scheduler (only enabled locally; disabled in production where Cloud Scheduler owns the schedule)
+- **Collect now** button — runs one collection cycle synchronously inside the web app. In production this provides a manual override on top of the daily Cloud Run Job; locally it short-circuits the configured run interval.
 - Caption summarizing how many tickers are tracked, the run interval, and the scan cap
 
 ### Scheduler Section
@@ -196,14 +196,14 @@ Per-ticker aggregated metrics:
 
 | Chart | Description |
 |-------|-------------|
-| Article Growth Over Time | Cumulative total of all saved long-term articles by ingestion date |
-| Daily Article Count by Ticker | Stacked bar chart of daily saves grouped by ticker |
+| Article Growth Over Time | Line chart of the cumulative total of saved long-term articles, day by day |
+| Ticker Breakdown Over Time | Stacked bar chart of daily saved articles grouped by configured ticker |
 
 Both charts use `Europe/Zurich` dates on the x-axis and support hover tooltips.
 
 ### Recent Articles
 
-Table of the 200 most recently ingested articles across all configured tickers, with ticker, title, source, date, time, sentiment, and processing status.
+Table of the 100 most recently ingested articles across all configured tickers, with ticker, title, source, date, time, sentiment, and processing status.
 
 ### Export
 

@@ -36,8 +36,8 @@ The page uses three tabs at the top:
 - export summary tables
 
 ### Long-Term Trends
-- collector status pill (Live / Idle / Degraded / Stopped) reflecting the Cloud Scheduler state
-- **Collect now** button to trigger one collection cycle on demand (local scheduler only)
+- collector status pill (Live / Idle / Degraded / Stopped) derived from the most recent Firestore `ingested_at` plus in-process scheduler state
+- **Collect now** button to trigger one collection cycle synchronously (works both locally and as a manual override in production)
 - configured tickers table with per-ticker article counts and average sentiment
 - cumulative article growth chart over time
 - daily article count breakdown by ticker
