@@ -91,7 +91,7 @@ docs/
 pip install -r requirements.txt
 ```
 
-2. Place a valid service account key in `secrets/` (see [Credentials](#credentials)).
+2. Provide service account credentials (see [Credentials](#credentials)).
 
 3. Start Streamlit:
 
@@ -103,20 +103,25 @@ streamlit run src/news_analyzer/app.py
 
 ### Local Development
 
+Recommended: use Application Default Credentials so no key file needs to live on disk.
+
+```bash
+gcloud auth application-default login
+```
+
+Alternatively, drop a downloaded service account JSON into one of the auto-discovered locations:
+
+- `./secrets/` (project-local, gitignored)
+- `~/gcp-secrets/` (user-global, outside the repo)
+
 The app resolves credentials in this order:
 
 1. `GOOGLE_APPLICATION_CREDENTIALS` environment variable
-2. `datastore.credentials_path` from `config.yaml`
-3. Auto-discovery: most recent `.json` file in `secrets/`
+2. `datastore.credentials_path` in `config.yaml` (omitted by default)
+3. Auto-discovery: most recent `.json` file in `./secrets/`, then `~/gcp-secrets/`
+4. `gcloud` ADC credentials
 
-Place your service account JSON in `secrets/`. The folder is excluded from git via `.gitignore` and from the Docker image via `.dockerignore`.
-
-To create a new key:
-
-```bash
-gcloud iam service-accounts keys create secrets/<project-id>-new.json \
-  --iam-account=<service-account>@<project-id>.iam.gserviceaccount.com
-```
+Both `secrets/` (via `.gitignore` and `.dockerignore`) and `~/gcp-secrets/` are outside the repo and the Docker build context, so downloaded keys never reach git or production images.
 
 ### Cloud Run (Production)
 
@@ -131,7 +136,7 @@ The application reads runtime configuration from `config.yaml`.
 | `rss` | `language`, `country`, `period`, `max_results` |
 | `extractor` | `request_timeout_seconds`, `max_chars` |
 | `analyzer` | `max_chars`, `fallback_to_mock_on_error` |
-| `datastore` | `project_id`, `database_id`, `kind`, `credentials_path` |
+| `datastore` | `project_id`, `database_id`, `kind` (credentials auto-discovered, see [Credentials](#credentials)) |
 | `long_term_trends` | `enabled`, `interval_minutes`, `period`, `max_results`, `tickers` |
 
 Current long-term trends settings:

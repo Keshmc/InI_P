@@ -35,11 +35,12 @@ datastore:
   project_id: financial-news-analyzer-489418
   kind: AnalyzedArticle
   database_id: database
-  credentials_path: secrets/financial-news-analyzer-489418-77b36e4b020c.json
+  # credentials_path intentionally omitted — app auto-discovers the most recent
+  # *.json under secrets/ or ~/gcp-secrets/, and falls back to ADC in Cloud Run.
+  # Override locally with the GOOGLE_APPLICATION_CREDENTIALS env var if needed.
 
 gcp:
   project_id: financial-news-analyzer-489418
-  credentials_path: secrets/financial-news-analyzer-489418-77b36e4b020c.json
 
 long_term_trends:
   enabled: true
