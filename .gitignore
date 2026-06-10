@@ -22,6 +22,10 @@ build/
 # IDE
 .idea/
 *.iml
+.vscode/
+
+# Claude Code local state
+.claude/
 
 # OS
 .DS_Store
