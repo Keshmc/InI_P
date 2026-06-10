@@ -158,16 +158,22 @@ For chart timestamps, the page uses this fallback chain:
 
 ## Topbar Status Pill
 
-The collector status pill (top right of the navbar) reflects what the scheduler is *actually* doing — derived from `LongTermTrendScheduler.status()`:
+The collector status pill (top right of the navbar) is **data-driven**, not thread-driven. The webapp derives `last_run_at` from the most recent `ingested_at` in Firestore (falling back to the in-process scheduler's value when present), so the pill reflects what the external Cloud Run Job is actually doing — even though the webapp's in-memory scheduler is disabled in production.
 
 | State | When |
 |-------|------|
-| **Stopped** | Background thread isn't running (production web app, scale-to-zero, or disabled) |
-| **Idle** | Thread is up but no cycle has completed yet |
-| **Degraded** | Last cycle errored OR saved zero records |
-| **Live** | Last cycle persisted records without errors |
+| **Stopped** | No past run found in Firestore AND no in-process thread running. Production: the daily Cloud Run Job has never executed (not configured, IAM missing, etc.). |
+| **Idle** | A past run exists but is older than `2 × interval_minutes` (or 48h fallback), OR an in-process thread is up without a completed cycle. Production: the daily job ran, but the next scheduled trigger hasn't fired yet. |
+| **Degraded** | The in-process scheduler's last cycle raised an error. |
+| **Live** | The most recent run is within the `2 × interval_minutes` freshness window. |
 
-In production the web app runs with the scheduler disabled, so the pill stays **Stopped** there — the actual collection happens in the separate Cloud Run Job. The Long-Term Trends page's metrics (last run, latest cycle totals) are derived from stored records and Cloud Scheduler state, not from in-memory scheduler state, so they reflect Cloud Run Job executions correctly even when the web app's scheduler is off.
+The same enrichment is applied to the Long-Term Trends page's "Last run · Zurich" metric, so it shows the actual Cloud Run Job execution timestamp.
+
+Implementation notes:
+
+- `view.py` calls `DatastoreRepository.get_latest_ingested_at()` once per Streamlit session (cached for 5 minutes in `st.session_state`) and merges the result into `trend_status["last_run_at"]` before passing it to the topbar.
+- The "Collect now" button on the Long-Term Trends page invalidates this cache so the pill updates immediately after a manual run.
+- `get_latest_ingested_at()` uses a `-ingested_at` ordered query (limit=1) and falls back to a small scan if the index is missing.
 
 ## Provider Notes
 

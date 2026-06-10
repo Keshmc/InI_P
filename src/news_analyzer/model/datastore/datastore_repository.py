@@ -335,6 +335,45 @@ class FirestoreRepository:
                 saved += 1
         return saved
 
+    def get_latest_ingested_at(self) -> str:
+        """Return the most recent `ingested_at` ISO string across all records, or ''.
+
+        Used by the UI to derive the collector's "last run" from persisted records
+        instead of in-process scheduler state — in production the Cloud Run Job
+        writes to Firestore from a different process, so the webapp's in-memory
+        `last_run_at` is always empty.
+        """
+        if not self.is_available:
+            self.last_error = self.init_error or "Datastore client is not initialized."
+            return ""
+
+        query = self.client.query(kind=self.collection_name)
+        try:
+            query.order = ["-ingested_at"]
+            rows = list(query.fetch(limit=1))
+        except Exception as exc:  # noqa: BLE001
+            # Index missing or other ordering failure — fall back to a small scan.
+            try:
+                fallback_query = self.client.query(kind=self.collection_name)
+                rows = list(fallback_query.fetch(limit=200))
+            except Exception as fallback_exc:  # noqa: BLE001
+                self.last_error = f"Latest-ingested lookup failed: {fallback_exc} (initial: {exc})"
+                return ""
+
+        latest = ""
+        latest_dt: datetime | None = None
+        for entity in rows:
+            raw = str(dict(entity).get("ingested_at", "")).strip()
+            parsed = self._parse_datetime(raw)
+            if parsed is None:
+                continue
+            if latest_dt is None or parsed > latest_dt:
+                latest_dt = parsed
+                latest = raw
+
+        self.last_error = None
+        return latest
+
     def query_records(self, query_filter: FirestoreQuery | None = None, **kwargs: Any) -> list[dict[str, Any]]:
         """Query stored records with filter support."""
         if not self.is_available:

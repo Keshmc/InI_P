@@ -101,6 +101,8 @@ class LongTermPage:
             # Force a reload of the page-level payload so charts pick up the new records.
             st.session_state.pop(self._STATE_KEY, None)
             st.session_state.pop(self._CONFIG_KEY, None)
+            # Drop the navbar's Firestore freshness cache so the pill updates immediately.
+            st.session_state.pop("_long_term_latest_ingested_cache", None)
             self.trend_status = self.scheduler.status()
             st.rerun()
 
@@ -184,10 +186,21 @@ class LongTermPage:
             row for row in records if self._resolve_record_ticker(row, ticker_map) is not None
         ]
 
+        # Derive the collector's "last run" from the most recent `ingested_at`
+        # across *all* records (not just matched), because the production daily
+        # job persists records from a separate process and the in-memory
+        # `trend_status.last_run_at` is always empty in that setup.
+        latest_ingested_at = self._compute_latest_ingested_at(records)
+
         ticker_rows = self._build_ticker_rows(ticker_display=ticker_display, records=matched_records, ticker_map=ticker_map)
         timeline_rows = self._build_timeline_rows(records=matched_records, ticker_map=ticker_map)
         cumulative_rows = self._build_cumulative_total_rows(timeline_rows)
-        summary_rows = self._build_summary_rows(ticker_display=ticker_display, records=matched_records, ticker_rows=ticker_rows)
+        summary_rows = self._build_summary_rows(
+            ticker_display=ticker_display,
+            records=matched_records,
+            ticker_rows=ticker_rows,
+            latest_ingested_at=latest_ingested_at,
+        )
         recent_articles = self._build_recent_article_rows(records=matched_records, ticker_map=ticker_map)
 
         return {
@@ -198,6 +211,7 @@ class LongTermPage:
             "recent_articles": recent_articles,
             "matched_articles": len(matched_records),
             "configured_tickers": len(ticker_display),
+            "latest_ingested_at": latest_ingested_at,
         }
 
     def _render_scheduler_status(self) -> None:
@@ -206,17 +220,23 @@ class LongTermPage:
             "Status of the background collector that keeps long-term tickers up to date.",
         )
 
-        last_run = format_swiss_timestamp(str(self.trend_status.get("last_run_at", "") or ""))
+        effective_last_run_raw = self._effective_last_run_raw()
+        last_run = format_swiss_timestamp(effective_last_run_raw)
         interval_minutes = int(self.trend_status.get("interval_minutes", self.trend_config.interval_minutes))
         configured_tickers = len([item for item in self.trend_config.tickers if str(item).strip()])
         last_result = self.trend_status.get("last_result", {})
         totals = last_result.get("totals", {}) if isinstance(last_result, dict) else {}
 
+        # Pass an enriched status to the pill so it reflects external Cloud Run Job
+        # executions (which never touch the webapp's in-memory scheduler state).
+        enriched_status = dict(self.trend_status)
+        enriched_status["last_run_at"] = effective_last_run_raw
+
         with st.container(border=True):
             st.markdown(
                 (
                     '<div class="na-inline-status">'
-                    f"{build_collector_status_pill(self.trend_status)}"
+                    f"{build_collector_status_pill(enriched_status)}"
                     "</div>"
                 ),
                 unsafe_allow_html=True,
@@ -385,8 +405,13 @@ class LongTermPage:
         ticker_display: list[str],
         records: list[dict[str, Any]],
         ticker_rows: list[dict[str, Any]],
+        latest_ingested_at: str = "",
     ) -> list[dict[str, Any]]:
         tickers_with_data = sum(1 for row in ticker_rows if int(row.get("saved_articles", 0)) > 0)
+        last_run_raw = (
+            str(self.trend_status.get("last_run_at", "") or "").strip()
+            or str(latest_ingested_at or "").strip()
+        )
         return [
             {
                 "configured_tickers": len(ticker_display),
@@ -394,7 +419,7 @@ class LongTermPage:
                 "saved_articles": len(records),
                 "scheduler_running": bool(self.trend_status.get("running", False)),
                 "interval_minutes": int(self.trend_status.get("interval_minutes", self.trend_config.interval_minutes)),
-                "last_run_at_zurich": format_swiss_timestamp(str(self.trend_status.get("last_run_at", "") or "")),
+                "last_run_at_zurich": format_swiss_timestamp(last_run_raw),
             }
         ]
 
@@ -588,6 +613,30 @@ class LongTermPage:
     @staticmethod
     def _sort_date_label(date_label: str) -> str:
         return LongTermPage._format_chart_date(date_label)
+
+    def _effective_last_run_raw(self) -> str:
+        """Pick the in-memory last_run_at if present, else the datastore-derived value."""
+        in_memory = str(self.trend_status.get("last_run_at", "") or "").strip()
+        if in_memory:
+            return in_memory
+        payload = st.session_state.get(self._STATE_KEY, {})
+        if isinstance(payload, dict):
+            return str(payload.get("latest_ingested_at", "") or "").strip()
+        return ""
+
+    @classmethod
+    def _compute_latest_ingested_at(cls, records: list[dict[str, Any]]) -> str:
+        latest_raw = ""
+        latest_dt: datetime | None = None
+        for row in records:
+            raw_value = str(row.get("ingested_at", "")).strip()
+            parsed = cls._parse_datetime(raw_value)
+            if parsed is None:
+                continue
+            if latest_dt is None or parsed > latest_dt:
+                latest_dt = parsed
+                latest_raw = raw_value
+        return latest_raw
 
     @staticmethod
     def _parse_datetime(value: str | None) -> datetime | None:

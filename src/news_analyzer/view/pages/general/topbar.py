@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
 
+from dateutil import parser as date_parser
 import streamlit as st
 
 from news_analyzer.view.utils import format_swiss_timestamp
@@ -186,12 +188,21 @@ def _resolve_selected_key(default_key: str, keys: list[str]) -> str:
 
 
 def build_collector_status_pill(trend_status: dict[str, object]) -> str:
-    """Render a four-state pill that reflects what the scheduler is *actually* doing.
+    """Render a four-state pill that reflects whether collection is actually happening.
 
-    - Stopped: background thread isn't running.
-    - Idle: thread runs but no cycle has completed yet.
-    - Degraded: last cycle errored OR saved zero records.
-    - Live: last cycle persisted records without errors.
+    The check is data-driven, not thread-driven: in production the in-process
+    scheduler is disabled and the daily collection runs in a separate Cloud Run
+    Job, so a missing background thread does *not* mean "stopped". We look at the
+    most recent `last_run_at` (which the view enriches from Firestore's latest
+    `ingested_at`) and decide based on freshness.
+
+    - Stopped: no past run found AND no in-process thread → daily collector is
+      not configured at all.
+    - Idle: a past run exists but is older than the expected interval (job is
+      configured, just waiting for the next scheduled trigger), OR an in-process
+      thread is running but hasn't completed a cycle yet.
+    - Degraded: last cycle errored.
+    - Live: last run is within the expected interval window.
     """
     running = bool(trend_status.get("running", False))
     last_run = str(trend_status.get("last_run_at", "") or "")
@@ -201,32 +212,44 @@ def build_collector_status_pill(trend_status: dict[str, object]) -> str:
     last_result = trend_status.get("last_result", {}) or {}
     totals = last_result.get("totals", {}) if isinstance(last_result, dict) else {}
     saved_count = int(totals.get("saved", 0) or 0)
-    loaded_count = int(totals.get("loaded", 0) or 0)
 
-    if not running:
-        state_class = "na-status-stopped"
-        state_label = "Stopped"
-        primary_line = "Background collector is not running."
-    elif not last_run:
-        state_class = "na-status-idle"
-        state_label = "Idle"
-        primary_line = "Thread is up — first collection cycle hasn't completed yet."
-    elif last_error:
+    last_run_dt = _parse_iso(last_run)
+    age_minutes: float | None = None
+    if last_run_dt is not None:
+        age_minutes = (datetime.now(timezone.utc) - last_run_dt).total_seconds() / 60.0
+
+    freshness_threshold_minutes = (
+        max(interval_minutes * 2, 60) if interval_minutes > 0 else 48 * 60
+    )
+
+    if last_error:
         state_class = "na-status-degraded"
         state_label = "Degraded"
         primary_line = f"Last cycle failed: {last_error}"
-    elif saved_count == 0 and loaded_count == 0:
-        state_class = "na-status-degraded"
-        state_label = "Degraded"
-        primary_line = "Last cycle completed but persisted zero records (check credentials / Firestore)."
-    else:
+    elif last_run_dt is None and not running:
+        # Never collected and no thread → daily container is not running.
+        state_class = "na-status-stopped"
+        state_label = "Stopped"
+        primary_line = "No collection runs found — daily collector may not be configured."
+    elif last_run_dt is not None and age_minutes is not None and age_minutes <= freshness_threshold_minutes:
         state_class = "na-status-running"
         state_label = "Live"
-        primary_line = f"Last cycle saved {saved_count} new article(s)."
+        if saved_count > 0:
+            primary_line = f"Last cycle saved {saved_count} new article(s)."
+        else:
+            primary_line = "Recent collection cycle completed."
+    else:
+        # Records exist but are stale, or thread is up without a completed run.
+        state_class = "na-status-idle"
+        state_label = "Idle"
+        if last_run_dt is None:
+            primary_line = "Collector ready — first cycle hasn't completed yet."
+        else:
+            primary_line = "No recent collection cycle — waiting for the next scheduled run."
 
     tooltip_parts = [primary_line]
     if interval_minutes > 0:
-        tooltip_parts.append(f"Runs every {interval_minutes} min.")
+        tooltip_parts.append(f"Expected every {interval_minutes} min.")
     formatted_last_run = format_swiss_timestamp(last_run) if last_run else ""
     if formatted_last_run and formatted_last_run != "-":
         tooltip_parts.append(f"Last run (Zurich): {formatted_last_run}.")
@@ -238,6 +261,18 @@ def build_collector_status_pill(trend_status: dict[str, object]) -> str:
         f'<span class="na-status-label">Collector · {escape(state_label)}</span>'
         "</span>"
     )
+
+
+def _parse_iso(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = date_parser.parse(value)
+    except Exception:  # noqa: BLE001
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _inject_global_styles() -> None:
